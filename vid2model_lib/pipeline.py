@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -117,11 +118,73 @@ def frame_channels(
     return channels
 
 
+def interpolate_pose_points(
+    prev_pts: Dict[str, np.ndarray],
+    next_pts: Dict[str, np.ndarray],
+    alpha: float,
+) -> Dict[str, np.ndarray]:
+    out: Dict[str, np.ndarray] = {}
+    for key in prev_pts:
+        out[key] = prev_pts[key] * (1.0 - alpha) + next_pts[key] * alpha
+    return out
+
+
+def fill_pose_gaps(
+    frames_pts: List[Optional[Dict[str, np.ndarray]]],
+    max_gap_interpolate: int,
+) -> Tuple[List[Dict[str, np.ndarray]], int, int]:
+    known_indices = [idx for idx, pts in enumerate(frames_pts) if pts is not None]
+    if not known_indices:
+        raise RuntimeError("No detectable human pose frames found.")
+
+    first_idx = known_indices[0]
+    last_idx = known_indices[-1]
+    interpolated_frames = 0
+    carried_frames = 0
+
+    filled: List[Optional[Dict[str, np.ndarray]]] = list(frames_pts)
+
+    # Fill leading/trailing gaps with nearest known frame.
+    for idx in range(0, first_idx):
+        filled[idx] = filled[first_idx]
+        carried_frames += 1
+    for idx in range(last_idx + 1, len(filled)):
+        filled[idx] = filled[last_idx]
+        carried_frames += 1
+
+    for prev_idx, next_idx in zip(known_indices, known_indices[1:]):
+        gap = next_idx - prev_idx - 1
+        if gap <= 0:
+            continue
+
+        prev_pts = filled[prev_idx]
+        next_pts = filled[next_idx]
+        if prev_pts is None or next_pts is None:
+            continue
+
+        if gap <= max_gap_interpolate:
+            for step in range(1, gap + 1):
+                alpha = step / (gap + 1)
+                filled[prev_idx + step] = interpolate_pose_points(prev_pts, next_pts, alpha)
+                interpolated_frames += 1
+        else:
+            for step in range(1, gap + 1):
+                filled[prev_idx + step] = prev_pts
+                carried_frames += 1
+
+    if any(pts is None for pts in filled):
+        raise RuntimeError("Internal error: pose gap filling produced unresolved frames.")
+
+    return [pts for pts in filled if pts is not None], interpolated_frames, carried_frames
+
+
 def convert_video_to_bvh(
     input_path: Path,
     model_complexity: int,
     min_detection_confidence: float,
     min_tracking_confidence: float,
+    max_gap_interpolate: int = 8,
+    progress_every: int = 100,
 ) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]]]:
     # Lazy import of heavy deps keeps CLI/help and unit tests lightweight.
     import cv2
@@ -149,9 +212,8 @@ def convert_video_to_bvh(
     )
     pose = mp_vision.PoseLandmarker.create_from_options(options)
 
-    frames_pts: List[Dict[str, np.ndarray]] = []
-    warmup_samples: List[Dict[str, np.ndarray]] = []
-    prev: Optional[Dict[str, np.ndarray]] = None
+    frames_pts_raw: List[Optional[Dict[str, np.ndarray]]] = []
+    detected_samples: List[Dict[str, np.ndarray]] = []
 
     frame_idx = 0
     while True:
@@ -166,24 +228,32 @@ def convert_video_to_bvh(
         frame_idx += 1
 
         pts = extract_pose_points(res)
-        if pts is None:
-            if prev is None:
-                continue
-            pts = prev
-        else:
-            prev = pts
-            if len(warmup_samples) < 60:
-                warmup_samples.append(pts)
+        frames_pts_raw.append(pts)
+        if pts is not None:
+            if len(detected_samples) < 60:
+                detected_samples.append(pts)
 
-        frames_pts.append(pts)
+        if progress_every > 0 and frame_idx % progress_every == 0:
+            detected = sum(1 for p in frames_pts_raw if p is not None)
+            print(
+                f"[vid2model] processed={frame_idx} detected={detected} miss={frame_idx - detected}",
+                file=sys.stderr,
+            )
 
     cap.release()
     pose.close()
 
-    if not frames_pts:
-        raise RuntimeError("No detectable human pose frames found.")
+    frames_pts, interpolated_frames, carried_frames = fill_pose_gaps(frames_pts_raw, max_gap_interpolate)
+    detected_count = sum(1 for p in frames_pts_raw if p is not None)
+    print(
+        (
+            f"[vid2model] done frames={len(frames_pts_raw)} detected={detected_count} "
+            f"interpolated={interpolated_frames} carried={carried_frames}"
+        ),
+        file=sys.stderr,
+    )
 
-    rest_offsets = build_rest_offsets(warmup_samples if warmup_samples else frames_pts[:20])
+    rest_offsets = build_rest_offsets(detected_samples if detected_samples else frames_pts[:20])
     ref_root = frames_pts[0]["mid_hip"].copy()
 
     motion_values = []
