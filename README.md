@@ -145,7 +145,9 @@ python3 -m http.server 8080
 ## Тесты
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+mkdir -p .cache/matplotlib .cache/fontconfig
+MPLCONFIGDIR="$PWD/.cache/matplotlib" XDG_CACHE_HOME="$PWD/.cache" \
+  .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 ## Как Это Работает

@@ -3,11 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import cv2
-import mediapipe as mp
 import numpy as np
-from mediapipe.tasks import python as mp_tasks_python
-from mediapipe.tasks.python import vision as mp_vision
 
 from .math3d import euler_zxy_from_matrix, rotation_align
 from .pose_model import ensure_pose_model
@@ -127,6 +123,12 @@ def convert_video_to_bvh(
     min_detection_confidence: float,
     min_tracking_confidence: float,
 ) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]]]:
+    # Lazy import of heavy deps keeps CLI/help and unit tests lightweight.
+    import cv2
+    import mediapipe as mp
+    from mediapipe.tasks import python as mp_tasks_python
+    from mediapipe.tasks.python import vision as mp_vision
+
     cap = cv2.VideoCapture(str(input_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open input video: {input_path}")
