@@ -1,4 +1,4 @@
-from .cli import main, parse_args
+from .cli import check_tools, main, parse_args
 from .math3d import euler_zxy_from_matrix, normalize, rotation_align
 from .pipeline import build_rest_offsets, bvh_hierarchy_lines, convert_video_to_bvh, frame_channels
 from .pose_model import MODEL_URLS, ensure_pose_model
@@ -14,6 +14,7 @@ __all__ = [
     "MAP_TO_POINTS",
     "MODEL_URLS",
     "build_rest_offsets",
+    "check_tools",
     "bvh_hierarchy_lines",
     "channel_headers",
     "convert_video_to_bvh",

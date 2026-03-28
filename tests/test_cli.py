@@ -45,6 +45,20 @@ class CliValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "Input file not found"):
                 cli.main()
 
+    def test_check_tools_short_circuits_validation(self) -> None:
+        argv = ["convert_video_to_bvh.py", "--check-tools"]
+        with patch("sys.argv", argv):
+            with patch("vid2model_lib.cli.check_tools", return_value=0) as mocked:
+                rc = cli.main()
+        self.assertEqual(rc, 0)
+        mocked.assert_called_once()
+
+    def test_missing_input_raises_when_not_check_tools(self) -> None:
+        argv = ["convert_video_to_bvh.py", "--output-bvh", "out.bvh"]
+        with patch("sys.argv", argv):
+            with self.assertRaisesRegex(ValueError, "Specify --input"):
+                cli.main()
+
 
 if __name__ == "__main__":
     unittest.main()

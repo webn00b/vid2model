@@ -4,13 +4,42 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$ROOT_DIR/.venv"
 PYTHON_BIN="${PYTHON_BIN:-}"
+MIN_PYTHON_MINOR=10
+MAX_PYTHON_MINOR=12
 
-if [[ -z "$PYTHON_BIN" ]]; then
-  if command -v python3.12 >/dev/null 2>&1; then
-    PYTHON_BIN="python3.12"
-  else
-    PYTHON_BIN="python3"
+python_minor() {
+  "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
+}
+
+is_supported_python() {
+  local bin="$1"
+  local minor
+  minor="$(python_minor "$bin" || true)"
+  [[ -n "$minor" ]] || return 1
+  [[ "$minor" -ge "$MIN_PYTHON_MINOR" && "$minor" -le "$MAX_PYTHON_MINOR" ]]
+}
+
+select_python_bin() {
+  local candidates=()
+  if [[ -n "$PYTHON_BIN" ]]; then
+    candidates+=("$PYTHON_BIN")
   fi
+  candidates+=(python3.12 python3.11 python3.10 python3)
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if command -v "$candidate" >/dev/null 2>&1 && is_supported_python "$candidate"; then
+      PYTHON_BIN="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! select_python_bin; then
+  echo "No supported Python found (need 3.${MIN_PYTHON_MINOR}-3.${MAX_PYTHON_MINOR} for stable mediapipe wheels)." >&2
+  echo "Install Python 3.10/3.11/3.12 or set PYTHON_BIN explicitly to a supported interpreter." >&2
+  exit 2
 fi
 
 recreate_venv() {
@@ -19,6 +48,7 @@ recreate_venv() {
     mv "$VENV_DIR" "$backup_dir"
     echo "Existing venv looks broken, moved to: $backup_dir"
   fi
+  echo "Creating venv with $PYTHON_BIN"
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 }
 

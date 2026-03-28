@@ -38,6 +38,44 @@ cd /Users/fedor/projects/personal/videoToModel/vid2model
 ./convert.sh /path/to/input.mp4 /path/to/output.bvh
 ```
 
+## Запуск Проекта
+
+Полный минимальный сценарий локального запуска:
+
+1. Перейти в директорию проекта:
+
+```bash
+cd /Users/fedor/projects/personal/videoToModel/vid2model
+```
+
+2. Проверить окружение (опционально, но рекомендуется):
+
+```bash
+.venv/bin/python convert_video_to_bvh.py --check-tools
+```
+
+3. Запустить конвертацию (пример):
+
+```bash
+./convert.sh think.mp4 output/think.bvh output/think.json output/think.csv output/think.npz output/think.trc
+```
+
+4. Поднять локальный viewer:
+
+```bash
+python3 -m http.server 8080
+```
+
+5. Открыть в браузере:
+
+`http://localhost:8080/viewer/index.html`
+
+Опционально экспорт в FBX:
+
+```bash
+./bvh_to_fbx.sh output/think.bvh output/think.fbx
+```
+
 ## Форматы вывода через `convert.sh`
 
 Сигнатура:
@@ -97,6 +135,15 @@ python3 convert_video_to_bvh.py \
 - `--model-complexity {0,1,2}` (по умолчанию `1`)
 - `--min-detection-confidence` (по умолчанию `0.5`)
 - `--min-tracking-confidence` (по умолчанию `0.5`)
+- `--max-gap-interpolate` (по умолчанию `8`, интерполяция коротких пропусков детекции)
+- `--progress-every` (по умолчанию `100`, период логирования прогресса; `0` отключает)
+- `--check-tools` (проверка окружения без конвертации)
+
+Проверка окружения:
+
+```bash
+.venv/bin/python convert_video_to_bvh.py --check-tools
+```
 
 ## BVH -> FBX (Blender CLI)
 
