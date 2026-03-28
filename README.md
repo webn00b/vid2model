@@ -231,6 +231,12 @@ MPLCONFIGDIR="$PWD/.cache/matplotlib" XDG_CACHE_HOME="$PWD/.cache" \
   .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
+Покрытие тестами включает:
+
+- валидацию CLI,
+- writer-функции (`BVH/JSON/CSV/NPZ/TRC`),
+- gap-filling логику (`interpolate/carry/leading-trailing/empty`).
+
 ## CI
 
 Автотесты запускаются в GitHub Actions на каждый `push` и `pull request`.
