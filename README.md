@@ -154,6 +154,7 @@ python3 convert_video_to_bvh.py \
 Поддерживаемые флаги:
 
 - `--output` (legacy-алиас для BVH, вместо `--output-bvh`)
+- `--config` (путь к профилю `.json/.yaml/.yml`, CLI-аргументы имеют приоритет)
 - `--output-bvh`
 - `--output-json`
 - `--output-csv`
@@ -170,6 +171,12 @@ python3 convert_video_to_bvh.py \
 
 ```bash
 .venv/bin/python convert_video_to_bvh.py --check-tools
+```
+
+Запуск с профилем:
+
+```bash
+.venv/bin/python convert_video_to_bvh.py --config ./config.example.yaml
 ```
 
 ## BVH -> FBX (Blender CLI)
