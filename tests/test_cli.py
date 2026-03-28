@@ -101,6 +101,50 @@ class CliValidationTests(unittest.TestCase):
             self.assertEqual(kwargs["progress_every"], 77)  # from config
             mocked_write_bvh.assert_called_once()
 
+    def test_invalid_model_complexity_from_config_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            config_path = tmp / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "input": str(video),
+                        "output_bvh": str(tmp / "out.bvh"),
+                        "model_complexity": 9,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = ["convert_video_to_bvh.py", "--config", str(config_path)]
+            with patch("sys.argv", argv):
+                with self.assertRaisesRegex(ValueError, "model_complexity must be one of"):
+                    cli.main()
+
+    def test_negative_progress_every_from_config_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            config_path = tmp / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "input": str(video),
+                        "output_bvh": str(tmp / "out.bvh"),
+                        "progress_every": -1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = ["convert_video_to_bvh.py", "--config", str(config_path)]
+            with patch("sys.argv", argv):
+                with self.assertRaisesRegex(ValueError, "progress_every must be >= 0"):
+                    cli.main()
+
 
 if __name__ == "__main__":
     unittest.main()

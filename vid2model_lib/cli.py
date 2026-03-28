@@ -104,6 +104,17 @@ def main() -> int:
     max_gap_interpolate = int(merged("max_gap_interpolate", 8))
     progress_every = int(merged("progress_every", 100))
 
+    if model_complexity not in (0, 1, 2):
+        raise ValueError("model_complexity must be one of: 0, 1, 2")
+    if not (0.0 <= min_detection_confidence <= 1.0):
+        raise ValueError("min_detection_confidence must be in range [0.0, 1.0]")
+    if not (0.0 <= min_tracking_confidence <= 1.0):
+        raise ValueError("min_tracking_confidence must be in range [0.0, 1.0]")
+    if max_gap_interpolate < 0:
+        raise ValueError("max_gap_interpolate must be >= 0")
+    if progress_every < 0:
+        raise ValueError("progress_every must be >= 0")
+
     if not input_value:
         raise ValueError("Specify --input (or use --check-tools).")
 

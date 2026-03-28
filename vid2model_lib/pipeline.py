@@ -229,6 +229,7 @@ def convert_video_to_bvh(
 
     frames_pts_raw: List[Optional[Dict[str, np.ndarray]]] = []
     detected_samples: List[Dict[str, np.ndarray]] = []
+    detected_count = 0
 
     frame_idx = 0
     while True:
@@ -245,13 +246,13 @@ def convert_video_to_bvh(
         pts = extract_pose_points(res)
         frames_pts_raw.append(pts)
         if pts is not None:
+            detected_count += 1
             if len(detected_samples) < 60:
                 detected_samples.append(pts)
 
         if progress_every > 0 and frame_idx % progress_every == 0:
-            detected = sum(1 for p in frames_pts_raw if p is not None)
             print(
-                f"[vid2model] processed={frame_idx} detected={detected} miss={frame_idx - detected}",
+                f"[vid2model] processed={frame_idx} detected={detected_count} miss={frame_idx - detected_count}",
                 file=sys.stderr,
             )
 
@@ -259,7 +260,6 @@ def convert_video_to_bvh(
     pose.close()
 
     frames_pts, interpolated_frames, carried_frames = fill_pose_gaps(frames_pts_raw, max_gap_interpolate)
-    detected_count = sum(1 for p in frames_pts_raw if p is not None)
     print(
         (
             f"[vid2model] done frames={len(frames_pts_raw)} detected={detected_count} "
