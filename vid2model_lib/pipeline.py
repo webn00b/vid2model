@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .math3d import euler_zxy_from_matrix, rotation_align
+from .math3d import euler_zxy_from_matrix, rotation_align, rotation_align_with_secondary
 from .pose_model import ensure_pose_model
 from .pose_points import extract_pose_points
 from .skeleton import CHILDREN, JOINTS, MAP_TO_POINTS
@@ -84,6 +84,17 @@ def frame_channels(
     root_pos = pts["mid_hip"] - ref_root
     global_rot: Dict[str, np.ndarray] = {"Hips": np.eye(3)}
 
+    def secondary_vectors_for_joint(name: str, pts_cur: Dict[str, np.ndarray], rest: Dict[str, np.ndarray]) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        if name == "Hips":
+            cur_side = pts_cur["right_hip"] - pts_cur["left_hip"]
+            rest_side = rest["RightHip"] - rest["LeftHip"]
+            return cur_side, rest_side
+        if name in ("Spine", "Chest"):
+            cur_side = pts_cur["right_shoulder"] - pts_cur["left_shoulder"]
+            rest_side = rest["RightShoulder"] - rest["LeftShoulder"]
+            return cur_side, rest_side
+        return None, None
+
     def solve_joint(name: str) -> Tuple[float, float, float]:
         children = CHILDREN.get(name, [])
         if not children:
@@ -102,7 +113,11 @@ def frame_channels(
         parent = next(j for j in JOINTS if j.name == name).parent
         parent_global = np.eye(3) if parent is None else global_rot[parent]
 
-        r_align = rotation_align(rest_vec, cur_vec)
+        cur_secondary, rest_secondary = secondary_vectors_for_joint(name, pts, rest_offsets)
+        if cur_secondary is not None and rest_secondary is not None:
+            r_align = rotation_align_with_secondary(rest_vec, cur_vec, rest_secondary, cur_secondary)
+        else:
+            r_align = rotation_align(rest_vec, cur_vec)
         r_local = parent_global.T @ r_align
 
         global_rot[name] = parent_global @ r_local

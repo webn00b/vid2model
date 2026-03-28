@@ -56,3 +56,42 @@ def euler_zxy_from_matrix(r_mat: np.ndarray) -> Tuple[float, float, float]:
         y = math.atan2(-r_mat[2, 0], r_mat[2, 2])
 
     return (math.degrees(z), math.degrees(x), math.degrees(y))
+
+
+def _basis_from_primary_secondary(primary: np.ndarray, secondary: np.ndarray) -> np.ndarray:
+    """Build right-handed orthonormal basis using primary and secondary hints."""
+    x_axis = normalize(primary)
+    if np.linalg.norm(x_axis) < 1e-8:
+        return np.eye(3)
+
+    sec_proj = secondary - x_axis * np.dot(secondary, x_axis)
+    y_axis = normalize(sec_proj)
+    if np.linalg.norm(y_axis) < 1e-8:
+        # Stable fallback if secondary is degenerate/parallel to primary.
+        fallback = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        if abs(float(np.dot(x_axis, fallback))) > 0.9:
+            fallback = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        sec_proj = fallback - x_axis * np.dot(fallback, x_axis)
+        y_axis = normalize(sec_proj)
+        if np.linalg.norm(y_axis) < 1e-8:
+            return np.eye(3)
+
+    z_axis = normalize(np.cross(x_axis, y_axis))
+    if np.linalg.norm(z_axis) < 1e-8:
+        return np.eye(3)
+
+    # Re-orthogonalize y against x/z to reduce numeric drift.
+    y_axis = normalize(np.cross(z_axis, x_axis))
+    return np.column_stack((x_axis, y_axis, z_axis))
+
+
+def rotation_align_with_secondary(
+    rest_primary: np.ndarray,
+    cur_primary: np.ndarray,
+    rest_secondary: np.ndarray,
+    cur_secondary: np.ndarray,
+) -> np.ndarray:
+    """Best-effort alignment using two directional constraints."""
+    rest_basis = _basis_from_primary_secondary(rest_primary, rest_secondary)
+    cur_basis = _basis_from_primary_secondary(cur_primary, cur_secondary)
+    return cur_basis @ rest_basis.T
