@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import importlib.util
 import shutil
 import sys
 from pathlib import Path
+from typing import Any, Dict
 
 from .pipeline import convert_video_to_bvh
 from .writers import write_bvh, write_csv, write_json, write_npz, write_trc
@@ -12,6 +14,7 @@ from .writers import write_bvh, write_csv, write_json, write_npz, write_trc
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert video to BVH/JSON/CSV/NPZ/TRC using MediaPipe Pose.")
+    parser.add_argument("--config", help="Path to config file (.json/.yaml/.yml)")
     parser.add_argument("--input", help="Path to input video file (mp4/webm/mov/etc)")
     parser.add_argument("--output", help="Legacy output path for BVH (same as --output-bvh).")
     parser.add_argument("--output-bvh", help="Path to output BVH file.")
@@ -19,13 +22,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-csv", help="Path to output CSV file (frame channels).")
     parser.add_argument("--output-npz", help="Path to output NPZ file (compressed arrays).")
     parser.add_argument("--output-trc", help="Path to output TRC file (marker trajectories).")
-    parser.add_argument("--model-complexity", type=int, default=1, choices=[0, 1, 2])
-    parser.add_argument("--min-detection-confidence", type=float, default=0.5)
-    parser.add_argument("--min-tracking-confidence", type=float, default=0.5)
-    parser.add_argument("--max-gap-interpolate", type=int, default=8, help="Interpolate missing detections for gaps up to N frames.")
-    parser.add_argument("--progress-every", type=int, default=100, help="Print progress every N frames (0 disables).")
+    parser.add_argument("--model-complexity", type=int, choices=[0, 1, 2])
+    parser.add_argument("--min-detection-confidence", type=float)
+    parser.add_argument("--min-tracking-confidence", type=float)
+    parser.add_argument("--max-gap-interpolate", type=int, help="Interpolate missing detections for gaps up to N frames.")
+    parser.add_argument("--progress-every", type=int, help="Print progress every N frames (0 disables).")
     parser.add_argument("--check-tools", action="store_true", help="Validate local toolchain and exit.")
     return parser.parse_args()
+
+
+def load_config(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+
+    suffix = path.suffix.lower()
+    text = path.read_text(encoding="utf-8")
+
+    if suffix == ".json":
+        data = json.loads(text)
+    elif suffix in (".yaml", ".yml"):
+        try:
+            import yaml  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "YAML config requires PyYAML. Install it or use .json config."
+            ) from exc
+        data = yaml.safe_load(text)
+    else:
+        raise ValueError("Unsupported config format. Use .json, .yaml or .yml")
+
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("Config root must be an object/map.")
+    return data
 
 
 def check_tools() -> int:
@@ -49,20 +79,45 @@ def main() -> int:
     if args.check_tools:
         return check_tools()
 
-    if not args.input:
+    cfg: Dict[str, Any] = {}
+    if args.config:
+        cfg = load_config(Path(args.config).expanduser().resolve())
+
+    def merged(name: str, default: Any) -> Any:
+        cli_value = getattr(args, name)
+        if cli_value is not None:
+            return cli_value
+        if name in cfg and cfg[name] is not None:
+            return cfg[name]
+        return default
+
+    input_value = merged("input", None)
+    output_value = merged("output", None)
+    output_bvh_value = merged("output_bvh", None)
+    output_json_value = merged("output_json", None)
+    output_csv_value = merged("output_csv", None)
+    output_npz_value = merged("output_npz", None)
+    output_trc_value = merged("output_trc", None)
+    model_complexity = int(merged("model_complexity", 1))
+    min_detection_confidence = float(merged("min_detection_confidence", 0.5))
+    min_tracking_confidence = float(merged("min_tracking_confidence", 0.5))
+    max_gap_interpolate = int(merged("max_gap_interpolate", 8))
+    progress_every = int(merged("progress_every", 100))
+
+    if not input_value:
         raise ValueError("Specify --input (or use --check-tools).")
 
-    input_path = Path(args.input).expanduser().resolve()
-    output_bvh = Path(args.output_bvh).expanduser().resolve() if args.output_bvh else None
-    output_json = Path(args.output_json).expanduser().resolve() if args.output_json else None
-    output_csv = Path(args.output_csv).expanduser().resolve() if args.output_csv else None
-    output_npz = Path(args.output_npz).expanduser().resolve() if args.output_npz else None
-    output_trc = Path(args.output_trc).expanduser().resolve() if args.output_trc else None
+    input_path = Path(input_value).expanduser().resolve()
+    output_bvh = Path(output_bvh_value).expanduser().resolve() if output_bvh_value else None
+    output_json = Path(output_json_value).expanduser().resolve() if output_json_value else None
+    output_csv = Path(output_csv_value).expanduser().resolve() if output_csv_value else None
+    output_npz = Path(output_npz_value).expanduser().resolve() if output_npz_value else None
+    output_trc = Path(output_trc_value).expanduser().resolve() if output_trc_value else None
 
-    if args.output:
+    if output_value:
         if output_bvh is not None:
             raise ValueError("Use either --output or --output-bvh, not both.")
-        output_bvh = Path(args.output).expanduser().resolve()
+        output_bvh = Path(output_value).expanduser().resolve()
 
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
@@ -80,11 +135,11 @@ def main() -> int:
 
     fps, rest_offsets, motion_values, ref_root, frames_pts = convert_video_to_bvh(
         input_path=input_path,
-        model_complexity=args.model_complexity,
-        min_detection_confidence=args.min_detection_confidence,
-        min_tracking_confidence=args.min_tracking_confidence,
-        max_gap_interpolate=args.max_gap_interpolate,
-        progress_every=args.progress_every,
+        model_complexity=model_complexity,
+        min_detection_confidence=min_detection_confidence,
+        min_tracking_confidence=min_tracking_confidence,
+        max_gap_interpolate=max_gap_interpolate,
+        progress_every=progress_every,
     )
 
     if output_bvh is not None:
