@@ -39,6 +39,18 @@ cd /Users/fedor/projects/personal/videoToModel/vid2model
 ./convert.sh /path/to/input.mp4 /path/to/output.bvh
 ```
 
+Авто-имя (не нужно вручную писать output-пути):
+
+```bash
+./convert.sh --auto think.mp4
+```
+
+Авто-имя + все форматы:
+
+```bash
+./convert.sh --auto think.mp4 --all
+```
+
 ## Запуск Проекта
 
 Полный минимальный сценарий локального запуска:
@@ -109,6 +121,7 @@ python3 -m http.server 8080
 
 ```bash
 ./convert.sh <input_video> <output_bvh> [output_json] [output_csv] [output_npz] [output_trc] [output_fbx]
+./convert.sh --auto <input_video> [--all] [--fbx]
 ```
 
 Примеры:

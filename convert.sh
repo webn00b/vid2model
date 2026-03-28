@@ -60,18 +60,88 @@ recreate_venv() {
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 }
 
-if [[ $# -lt 2 ]]; then
-  echo "Usage: ./convert.sh <input_video> <output_bvh> [output_json] [output_csv] [output_npz] [output_trc] [output_fbx]"
+print_usage() {
+  cat <<'USAGE'
+Usage:
+  ./convert.sh <input_video> <output_bvh> [output_json] [output_csv] [output_npz] [output_trc] [output_fbx]
+  ./convert.sh --auto <input_video> [--all] [--fbx]
+
+Auto mode:
+  Writes to output/<input_stem>.* (e.g. think.mp4 -> output/think.bvh).
+  --all  Also write json/csv/npz/trc.
+  --fbx  Also write fbx via Blender.
+USAGE
+}
+
+if [[ $# -lt 1 ]]; then
+  print_usage
   exit 1
 fi
 
-INPUT="$1"
-OUTPUT_BVH="$2"
-OUTPUT_JSON="${3:-}"
-OUTPUT_CSV="${4:-}"
-OUTPUT_NPZ="${5:-}"
-OUTPUT_TRC="${6:-}"
-OUTPUT_FBX="${7:-}"
+INPUT=""
+OUTPUT_BVH=""
+OUTPUT_JSON=""
+OUTPUT_CSV=""
+OUTPUT_NPZ=""
+OUTPUT_TRC=""
+OUTPUT_FBX=""
+
+if [[ "$1" == "--auto" ]]; then
+  shift
+  if [[ $# -lt 1 ]]; then
+    print_usage
+    exit 1
+  fi
+  INPUT="$1"
+  shift
+
+  AUTO_ALL=0
+  AUTO_FBX=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all) AUTO_ALL=1 ;;
+      --fbx) AUTO_FBX=1 ;;
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown option in --auto mode: $1" >&2
+        print_usage
+        exit 2
+        ;;
+    esac
+    shift
+  done
+
+  stem="$(basename "$INPUT")"
+  stem="${stem%.*}"
+  out_dir="$ROOT_DIR/output"
+  mkdir -p "$out_dir"
+
+  OUTPUT_BVH="$out_dir/$stem.bvh"
+  if [[ "$AUTO_ALL" -eq 1 ]]; then
+    OUTPUT_JSON="$out_dir/$stem.json"
+    OUTPUT_CSV="$out_dir/$stem.csv"
+    OUTPUT_NPZ="$out_dir/$stem.npz"
+    OUTPUT_TRC="$out_dir/$stem.trc"
+  fi
+  if [[ "$AUTO_FBX" -eq 1 ]]; then
+    OUTPUT_FBX="$out_dir/$stem.fbx"
+  fi
+else
+  if [[ $# -lt 2 ]]; then
+    print_usage
+    exit 1
+  fi
+  INPUT="$1"
+  OUTPUT_BVH="$2"
+  OUTPUT_JSON="${3:-}"
+  OUTPUT_CSV="${4:-}"
+  OUTPUT_NPZ="${5:-}"
+  OUTPUT_TRC="${6:-}"
+  OUTPUT_FBX="${7:-}"
+fi
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   recreate_venv
