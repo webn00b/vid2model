@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BVH Viewer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f6fb;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #64748b;
+      --accent: #0f766e;
+      --border: #dbe5f0;
+    }
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: "Segoe UI", "SF Pro Text", "Arial", sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at 20% 0%, #dff7f1 0%, var(--bg) 35%);
+    }
+    #app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    button, input[type="file"]::file-selector-button {
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 10px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    input[type="range"] {
+      width: 220px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    .time {
+      font-size: 12px;
+      color: var(--muted);
+      min-width: 90px;
+      text-align: right;
+    }
+    button.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .status {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    #canvas-wrap {
+      position: relative;
+      min-height: 0;
+    }
+    #hint {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--muted);
+      z-index: 2;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="toolbar">
+      <button id="load-default" class="primary">Load output/think.bvh</button>
+      <input id="file-input" type="file" accept=".bvh" />
+      <button id="zoom-in">Zoom +</button>
+      <button id="zoom-out">Zoom -</button>
+      <button id="play">Play</button>
+      <button id="pause">Pause</button>
+      <button id="stop">Stop</button>
+      <input id="timeline" type="range" min="0" max="1" step="0.001" value="0" />
+      <div id="time" class="time">0.00 / 0.00</div>
+      <button id="reset-camera">Reset Camera</button>
+      <div id="status" class="status">Ready</div>
+    </div>
+    <div id="canvas-wrap">
+      <div id="hint">LMB rotate, RMB pan, wheel zoom</div>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+    import { BVHLoader } from "three/addons/loaders/BVHLoader.js";
+
+    const wrap = document.getElementById("canvas-wrap");
+    const statusEl = document.getElementById("status");
+    const fileInput = document.getElementById("file-input");
+    const btnLoadDefault = document.getElementById("load-default");
+    const btnZoomIn = document.getElementById("zoom-in");
+    const btnZoomOut = document.getElementById("zoom-out");
+    const btnPlay = document.getElementById("play");
+    const btnPause = document.getElementById("pause");
+    const btnStop = document.getElementById("stop");
+    const timeline = document.getElementById("timeline");
+    const timeEl = document.getElementById("time");
+    const btnResetCamera = document.getElementById("reset-camera");
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf8fbff);
+
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    wrap.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 100, 0);
+
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x7f8ea3, 1.0);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir.position.set(200, 300, 180);
+    scene.add(dir);
+
+    const grid = new THREE.GridHelper(1200, 30, 0x9aa9be, 0xc7d2e2);
+    scene.add(grid);
+    const axes = new THREE.AxesHelper(120);
+    scene.add(axes);
+
+    camera.position.set(260, 200, 260);
+    controls.update();
+
+    let mixer = null;
+    let skeletonObj = null;
+    let currentClip = null;
+    let currentAction = null;
+    let isPlaying = false;
+    let isScrubbing = false;
+    const loader = new BVHLoader();
+    const clock = new THREE.Clock();
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function fitToSkeleton(root) {
+      const box = new THREE.Box3().setFromObject(root);
+      const size = new THREE.Vector3();
+      const center = new THREE.Vector3();
+      box.getSize(size);
+      box.getCenter(center);
+      const maxDim = Math.max(size.x, size.y, size.z, 1);
+      const dist = maxDim * 1.8;
+      camera.position.set(center.x + dist, center.y + dist * 0.8, center.z + dist);
+      controls.target.copy(center);
+      controls.update();
+    }
+
+    function clearCurrent() {
+      if (skeletonObj) scene.remove(skeletonObj);
+      skeletonObj = null;
+      mixer = null;
+      currentClip = null;
+      currentAction = null;
+      isPlaying = false;
+      timeline.value = "0";
+      timeline.max = "1";
+      timeEl.textContent = "0.00 / 0.00";
+    }
+
+    function zoomBy(factor) {
+      const toCam = camera.position.clone().sub(controls.target);
+      const dist = toCam.length();
+      const next = Math.max(20, Math.min(4000, dist * factor));
+      if (dist > 1e-6) {
+        toCam.setLength(next);
+        camera.position.copy(controls.target.clone().add(toCam));
+        controls.update();
+        setStatus(`Zoom: ${Math.round(next)}`);
+      }
+    }
+
+    function loadBvhText(text, label) {
+      try {
+        const result = loader.parse(text);
+        clearCurrent();
+
+        skeletonObj = new THREE.Group();
+        const helper = new THREE.SkeletonHelper(result.skeleton.bones[0]);
+        helper.skeleton = result.skeleton;
+        helper.material.linewidth = 2;
+        helper.material.color.set(0x0f766e);
+        skeletonObj.add(result.skeleton.bones[0]);
+        skeletonObj.add(helper);
+        scene.add(skeletonObj);
+
+        mixer = new THREE.AnimationMixer(result.skeleton.bones[0]);
+        currentClip = result.clip;
+        currentAction = mixer.clipAction(currentClip);
+        currentAction.play();
+        isPlaying = true;
+        timeline.min = "0";
+        timeline.max = String(currentClip.duration);
+        timeline.value = "0";
+        timeEl.textContent = `0.00 / ${currentClip.duration.toFixed(2)}`;
+
+        fitToSkeleton(skeletonObj);
+        setStatus(`Loaded: ${label} (${Math.round(currentClip.duration * 100) / 100}s)`);
+      } catch (err) {
+        console.error(err);
+        setStatus(`Failed to load: ${label}`);
+      }
+    }
+
+    async function loadDefault() {
+      setStatus("Loading output/think.bvh ...");
+      try {
+        const res = await fetch("../output/think.bvh");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        loadBvhText(text, "output/think.bvh");
+      } catch (err) {
+        console.error(err);
+        setStatus("Cannot load output/think.bvh. Start local server from vid2model.");
+      }
+    }
+
+    fileInput.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      setStatus(`Loading ${file.name} ...`);
+      const text = await file.text();
+      loadBvhText(text, file.name);
+    });
+
+    btnLoadDefault.addEventListener("click", loadDefault);
+    btnZoomIn.addEventListener("click", () => zoomBy(0.85));
+    btnZoomOut.addEventListener("click", () => zoomBy(1.2));
+    btnPlay.addEventListener("click", () => {
+      if (!mixer || !currentAction) return;
+      isPlaying = true;
+      currentAction.paused = false;
+      setStatus("Playback: play");
+    });
+    btnPause.addEventListener("click", () => {
+      if (!mixer || !currentAction) return;
+      isPlaying = false;
+      currentAction.paused = true;
+      setStatus("Playback: pause");
+    });
+    btnStop.addEventListener("click", () => {
+      if (!mixer || !currentAction) return;
+      isPlaying = false;
+      currentAction.paused = true;
+      mixer.setTime(0);
+      timeline.value = "0";
+      timeEl.textContent = `0.00 / ${currentClip ? currentClip.duration.toFixed(2) : "0.00"}`;
+      setStatus("Playback: stop");
+    });
+    timeline.addEventListener("input", () => {
+      if (!mixer || !currentAction || !currentClip) return;
+      isScrubbing = true;
+      const t = Math.max(0, Math.min(currentClip.duration, Number(timeline.value)));
+      mixer.setTime(t);
+      timeEl.textContent = `${t.toFixed(2)} / ${currentClip.duration.toFixed(2)}`;
+      setStatus(`Scrub: ${t.toFixed(2)}s`);
+    });
+    timeline.addEventListener("change", () => {
+      isScrubbing = false;
+    });
+    btnResetCamera.addEventListener("click", () => {
+      camera.position.set(260, 200, 260);
+      controls.target.set(0, 100, 0);
+      controls.update();
+      setStatus("Camera reset");
+    });
+
+    function onResize() {
+      const w = wrap.clientWidth;
+      const h = wrap.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+    window.addEventListener("resize", onResize);
+    onResize();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+      if (mixer && currentClip) {
+        if (isPlaying && !isScrubbing) {
+          mixer.update(dt);
+        }
+        const duration = Math.max(currentClip.duration, 1e-6);
+        const t = mixer.time % duration;
+        if (!isScrubbing) {
+          timeline.value = String(t);
+        }
+        timeEl.textContent = `${t.toFixed(2)} / ${duration.toFixed(2)}`;
+      }
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
