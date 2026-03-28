@@ -11,6 +11,14 @@ python_minor() {
   "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
 }
 
+venv_python_supported() {
+  local py="$1"
+  local minor
+  minor="$("$py" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
+  [[ -n "$minor" ]] || return 1
+  [[ "$minor" -ge "$MIN_PYTHON_MINOR" && "$minor" -le "$MAX_PYTHON_MINOR" ]]
+}
+
 is_supported_python() {
   local bin="$1"
   local minor
@@ -66,6 +74,8 @@ OUTPUT_TRC="${6:-}"
 OUTPUT_FBX="${7:-}"
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+  recreate_venv
+elif ! venv_python_supported "$VENV_DIR/bin/python"; then
   recreate_venv
 elif ! "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
   recreate_venv
