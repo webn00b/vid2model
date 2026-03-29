@@ -12,4 +12,7 @@ model_complexity: 1
 min_detection_confidence: 0.5
 min_tracking_confidence: 0.5
 max_gap_interpolate: 8
+opencv_enhance: off   # off|light|strong
+max_frame_side: 0     # 0 = disable resize, else clamp longest side before detection
+roi_crop: off         # off|auto (adaptive crop around detected person)
 progress_every: 100
