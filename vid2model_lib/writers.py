@@ -11,13 +11,14 @@ from .skeleton import JOINTS, MAP_TO_POINTS
 
 
 def channel_headers() -> List[str]:
+    root_name = JOINTS[0].name
     headers = [
-        "Hips_Xposition",
-        "Hips_Yposition",
-        "Hips_Zposition",
-        "Hips_Zrotation",
-        "Hips_Xrotation",
-        "Hips_Yrotation",
+        f"{root_name}_Xposition",
+        f"{root_name}_Yposition",
+        f"{root_name}_Zposition",
+        f"{root_name}_Zrotation",
+        f"{root_name}_Xrotation",
+        f"{root_name}_Yrotation",
     ]
     for joint in JOINTS[1:]:
         headers.extend(
@@ -67,7 +68,7 @@ def write_json(
 
     channel_layout = [
         {
-            "joint": "Hips",
+            "joint": JOINTS[0].name,
             "channels": ["Xposition", "Yposition", "Zposition", "Zrotation", "Xrotation", "Yrotation"],
         }
     ]

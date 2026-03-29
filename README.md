@@ -288,6 +288,29 @@ MPLCONFIGDIR="$PWD/.cache/matplotlib" XDG_CACHE_HOME="$PWD/.cache" \
 - проще тестировать (math/writers можно проверять отдельно),
 - сохраняется совместимость старого запуска `python convert_video_to_bvh.py ...`.
 
+## Скелет И Сравнение С SystemAnimatorOnline
+
+Скелет в `vid2model` сверен с `SystemAnimatorOnline/MMD.js/MMD_SA.js` (VRM/mixamo `rig_map`) и приведен к VRM-неймингу 1:1.
+
+Что перенесено:
+
+- `upperChest`,
+- кости рук в VRM-стиле: `leftShoulder/leftUpperArm/leftLowerArm/leftHand` и зеркально справа,
+- пальцы обеих рук:
+  `ThumbMetacarpal/ThumbProximal/ThumbDistal`,
+  `IndexProximal/IndexIntermediate/IndexDistal`,
+  `MiddleProximal/MiddleIntermediate/MiddleDistal`,
+  `RingProximal/RingIntermediate/RingDistal`,
+  `LittleProximal/LittleIntermediate/LittleDistal`,
+- ноги в VRM-стиле: `leftUpperLeg/leftLowerLeg/leftFoot/leftToes` и зеркально справа.
+
+Итого в текущем скелете `52` кости (как в mixamo->VRM мапе из `SystemAnimatorOnline`).
+
+Источник данных для костей:
+
+- напрямую из MediaPipe Pose: корпус, ноги, `thumb/index/pinky`, `foot_index`,
+- аппроксимацией (вычисляются из доступных landmarks): `leftShoulder/rightShoulder` как clavicle-точки, `middle/ring` пальцы и промежуточные фаланги.
+
 ## Примечания
 
 - MediaPipe-модель (`*.task`) скачивается в папку `models/` автоматически при первом запуске.

@@ -71,7 +71,7 @@ def bvh_hierarchy_lines(rest_offsets: Dict[str, np.ndarray]) -> List[str]:
 
         lines.append(f"{indent}}}")
 
-    write_joint("Hips", 0)
+    write_joint(JOINTS[0].name, 0)
     return lines
 
 
@@ -81,17 +81,19 @@ def frame_channels(
     ref_root: np.ndarray,
 ) -> List[float]:
     channels: List[float] = []
-    root_pos = pts["mid_hip"] - ref_root
-    global_rot: Dict[str, np.ndarray] = {"Hips": np.eye(3)}
+    root_name = JOINTS[0].name
+    root_point_name = MAP_TO_POINTS[root_name][0]
+    root_pos = pts[root_point_name] - ref_root
+    global_rot: Dict[str, np.ndarray] = {root_name: np.eye(3)}
 
     def secondary_vectors_for_joint(name: str, pts_cur: Dict[str, np.ndarray], rest: Dict[str, np.ndarray]) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        if name == "Hips":
+        if name == "hips":
             cur_side = pts_cur["right_hip"] - pts_cur["left_hip"]
-            rest_side = rest["RightHip"] - rest["LeftHip"]
+            rest_side = rest["rightUpperLeg"] - rest["leftUpperLeg"]
             return cur_side, rest_side
-        if name in ("Spine", "Chest"):
+        if name in ("spine", "chest", "upperChest"):
             cur_side = pts_cur["right_shoulder"] - pts_cur["left_shoulder"]
-            rest_side = rest["RightShoulder"] - rest["LeftShoulder"]
+            rest_side = rest["rightUpperArm"] - rest["leftUpperArm"]
             return cur_side, rest_side
         return None, None
 
@@ -123,7 +125,7 @@ def frame_channels(
         global_rot[name] = parent_global @ r_local
         return euler_zxy_from_matrix(r_local)
 
-    rz, rx, ry = solve_joint("Hips")
+    rz, rx, ry = solve_joint(root_name)
     channels.extend([float(root_pos[0]), float(root_pos[1]), float(root_pos[2]), rz, rx, ry])
 
     for joint in JOINTS[1:]:
@@ -217,7 +219,10 @@ def convert_video_to_bvh(
 
     model_path = ensure_pose_model(model_complexity)
     options = mp_vision.PoseLandmarkerOptions(
-        base_options=mp_tasks_python.BaseOptions(model_asset_path=str(model_path)),
+        base_options=mp_tasks_python.BaseOptions(
+            model_asset_path=str(model_path),
+            delegate=mp_tasks_python.BaseOptions.Delegate.CPU,
+        ),
         running_mode=mp_vision.RunningMode.VIDEO,
         num_poses=1,
         min_pose_detection_confidence=min_detection_confidence,
@@ -269,7 +274,8 @@ def convert_video_to_bvh(
     )
 
     rest_offsets = build_rest_offsets(detected_samples if detected_samples else frames_pts[:20])
-    ref_root = frames_pts[0]["mid_hip"].copy()
+    root_point_name = MAP_TO_POINTS[JOINTS[0].name][0]
+    ref_root = frames_pts[0][root_point_name].copy()
 
     motion_values = []
     for pts in frames_pts:
