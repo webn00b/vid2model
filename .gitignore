@@ -30,6 +30,9 @@ Thumbs.db
 
 # Local runtime artifacts
 models/
+!viewer/models/
+viewer/models/*
+!viewer/models/en_0.vrm
 output/
 *.log
 *.download

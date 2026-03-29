@@ -73,6 +73,9 @@ class CliValidationTests(unittest.TestCase):
                         "input": str(video),
                         "output_bvh": str(out_bvh),
                         "model_complexity": 2,
+                        "opencv_enhance": "strong",
+                        "max_frame_side": 960,
+                        "roi_crop": "auto",
                         "progress_every": 77,
                     }
                 ),
@@ -99,6 +102,9 @@ class CliValidationTests(unittest.TestCase):
             kwargs = mocked_convert.call_args.kwargs
             self.assertEqual(kwargs["model_complexity"], 1)  # CLI override
             self.assertEqual(kwargs["progress_every"], 77)  # from config
+            self.assertEqual(kwargs["opencv_enhance"], "strong")  # from config
+            self.assertEqual(kwargs["max_frame_side"], 960)  # from config
+            self.assertEqual(kwargs["roi_crop"], "auto")  # from config
             mocked_write_bvh.assert_called_once()
 
     def test_invalid_model_complexity_from_config_raises(self) -> None:
@@ -143,6 +149,72 @@ class CliValidationTests(unittest.TestCase):
             argv = ["convert_video_to_bvh.py", "--config", str(config_path)]
             with patch("sys.argv", argv):
                 with self.assertRaisesRegex(ValueError, "progress_every must be >= 0"):
+                    cli.main()
+
+    def test_invalid_opencv_enhance_from_config_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            config_path = tmp / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "input": str(video),
+                        "output_bvh": str(tmp / "out.bvh"),
+                        "opencv_enhance": "ultra",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = ["convert_video_to_bvh.py", "--config", str(config_path)]
+            with patch("sys.argv", argv):
+                with self.assertRaisesRegex(ValueError, "opencv_enhance must be one of"):
+                    cli.main()
+
+    def test_negative_max_frame_side_from_config_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            config_path = tmp / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "input": str(video),
+                        "output_bvh": str(tmp / "out.bvh"),
+                        "max_frame_side": -10,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = ["convert_video_to_bvh.py", "--config", str(config_path)]
+            with patch("sys.argv", argv):
+                with self.assertRaisesRegex(ValueError, "max_frame_side must be >= 0"):
+                    cli.main()
+
+    def test_invalid_roi_crop_from_config_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            config_path = tmp / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "input": str(video),
+                        "output_bvh": str(tmp / "out.bvh"),
+                        "roi_crop": "smart",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = ["convert_video_to_bvh.py", "--config", str(config_path)]
+            with patch("sys.argv", argv):
+                with self.assertRaisesRegex(ValueError, "roi_crop must be one of"):
                     cli.main()
 
 

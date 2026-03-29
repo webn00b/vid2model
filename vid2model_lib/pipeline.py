@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -195,6 +196,175 @@ def fill_pose_gaps(
     return [pts for pts in filled if pts is not None], interpolated_frames, carried_frames
 
 
+@lru_cache(maxsize=16)
+def gamma_lut(gamma: float) -> np.ndarray:
+    g = max(0.1, min(4.0, float(gamma)))
+    return np.array([((i / 255.0) ** g) * 255.0 for i in range(256)], dtype=np.uint8)
+
+
+def resize_frame_for_detection(frame: np.ndarray, max_frame_side: int, cv2) -> np.ndarray:
+    if max_frame_side <= 0:
+        return frame
+    h, w = frame.shape[:2]
+    longest = max(h, w)
+    if longest <= max_frame_side:
+        return frame
+
+    scale = max_frame_side / float(longest)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    return cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+def preprocess_video_frame(
+    frame: np.ndarray,
+    cv2,
+    opencv_enhance: str,
+    max_frame_side: int,
+) -> np.ndarray:
+    processed = resize_frame_for_detection(frame, max_frame_side, cv2)
+    if opencv_enhance == "off":
+        return processed
+
+    if opencv_enhance == "light":
+        bilateral_d = 5
+        bilateral_sigma = 20
+        clahe_clip_limit = 1.6
+        gamma = 0.95
+    else:
+        bilateral_d = 7
+        bilateral_sigma = 40
+        clahe_clip_limit = 2.4
+        gamma = 0.90
+
+    # Denoise while preserving edges before landmark detection.
+    processed = cv2.bilateralFilter(
+        processed, d=bilateral_d, sigmaColor=bilateral_sigma, sigmaSpace=bilateral_sigma
+    )
+
+    # Improve local contrast on luminance channel for challenging lighting.
+    lab = cv2.cvtColor(processed, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip_limit, tileGridSize=(8, 8))
+    l_channel = clahe.apply(l_channel)
+    lab = cv2.merge((l_channel, a_channel, b_channel))
+    processed = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+    if abs(gamma - 1.0) > 1e-6:
+        processed = cv2.LUT(processed, gamma_lut(round(gamma, 4)))
+
+    return processed
+
+
+def extract_pose_bbox_pixels(res, frame_w: int, frame_h: int) -> Optional[Tuple[float, float, float, float]]:
+    if frame_w <= 0 or frame_h <= 0:
+        return None
+    if not getattr(res, "pose_landmarks", None):
+        return None
+    if not res.pose_landmarks:
+        return None
+
+    xs: List[float] = []
+    ys: List[float] = []
+    landmarks = res.pose_landmarks[0]
+    for lm in landmarks:
+        x = getattr(lm, "x", None)
+        y = getattr(lm, "y", None)
+        if x is None or y is None:
+            continue
+        x = float(x)
+        y = float(y)
+        if not np.isfinite(x) or not np.isfinite(y):
+            continue
+
+        vis = getattr(lm, "visibility", None)
+        if vis is not None:
+            vis = float(vis)
+            if np.isfinite(vis) and vis < 0.05:
+                continue
+
+        xs.append(min(max(x, 0.0), 1.0))
+        ys.append(min(max(y, 0.0), 1.0))
+
+    if len(xs) < 4 or len(ys) < 4:
+        return None
+
+    min_x = min(xs) * frame_w
+    max_x = max(xs) * frame_w
+    min_y = min(ys) * frame_h
+    max_y = max(ys) * frame_h
+    if max_x - min_x < 2.0 or max_y - min_y < 2.0:
+        return None
+    return (min_x, min_y, max_x, max_y)
+
+
+def clamp_roi_box(
+    roi: Tuple[float, float, float, float],
+    frame_w: int,
+    frame_h: int,
+    min_side: float,
+) -> Tuple[int, int, int, int]:
+    x0, y0, x1, y1 = roi
+    x0 = max(0.0, min(float(frame_w), x0))
+    y0 = max(0.0, min(float(frame_h), y0))
+    x1 = max(0.0, min(float(frame_w), x1))
+    y1 = max(0.0, min(float(frame_h), y1))
+    if x1 <= x0:
+        x1 = min(float(frame_w), x0 + min_side)
+    if y1 <= y0:
+        y1 = min(float(frame_h), y0 + min_side)
+
+    w = x1 - x0
+    h = y1 - y0
+    if w < min_side:
+        cx = (x0 + x1) * 0.5
+        half = min_side * 0.5
+        x0 = max(0.0, cx - half)
+        x1 = min(float(frame_w), cx + half)
+    if h < min_side:
+        cy = (y0 + y1) * 0.5
+        half = min_side * 0.5
+        y0 = max(0.0, cy - half)
+        y1 = min(float(frame_h), cy + half)
+
+    x0i = int(np.floor(max(0.0, min(x0, float(frame_w - 1)))))
+    y0i = int(np.floor(max(0.0, min(y0, float(frame_h - 1)))))
+    x1i = int(np.ceil(max(float(x0i + 1), min(x1, float(frame_w)))))
+    y1i = int(np.ceil(max(float(y0i + 1), min(y1, float(frame_h)))))
+    return (x0i, y0i, x1i, y1i)
+
+
+def update_tracking_roi(
+    prev_roi: Optional[Tuple[int, int, int, int]],
+    detected_bbox: Tuple[float, float, float, float],
+    frame_w: int,
+    frame_h: int,
+) -> Tuple[int, int, int, int]:
+    min_side = max(96.0, min(frame_w, frame_h) * 0.20)
+    min_x, min_y, max_x, max_y = detected_bbox
+    cx = (min_x + max_x) * 0.5
+    cy = (min_y + max_y) * 0.5
+    side = max(max_x - min_x, max_y - min_y)
+    side = max(side * 1.9, min_side)
+    target = (
+        cx - side * 0.5,
+        cy - side * 0.5,
+        cx + side * 0.5,
+        cy + side * 0.5,
+    )
+
+    if prev_roi is not None:
+        alpha = 0.60
+        target = (
+            prev_roi[0] * alpha + target[0] * (1.0 - alpha),
+            prev_roi[1] * alpha + target[1] * (1.0 - alpha),
+            prev_roi[2] * alpha + target[2] * (1.0 - alpha),
+            prev_roi[3] * alpha + target[3] * (1.0 - alpha),
+        )
+
+    return clamp_roi_box(target, frame_w, frame_h, min_side=min_side)
+
+
 def convert_video_to_bvh(
     input_path: Path,
     model_complexity: int,
@@ -202,12 +372,24 @@ def convert_video_to_bvh(
     min_tracking_confidence: float,
     max_gap_interpolate: int = 8,
     progress_every: int = 100,
+    opencv_enhance: str = "off",
+    max_frame_side: int = 0,
+    roi_crop: str = "off",
 ) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]]]:
     # Lazy import of heavy deps keeps CLI/help and unit tests lightweight.
     import cv2
     import mediapipe as mp
     from mediapipe.tasks import python as mp_tasks_python
     from mediapipe.tasks.python import vision as mp_vision
+
+    opencv_enhance = str(opencv_enhance).strip().lower()
+    if opencv_enhance not in {"off", "light", "strong"}:
+        raise ValueError("opencv_enhance must be one of: off, light, strong")
+    if max_frame_side < 0:
+        raise ValueError("max_frame_side must be >= 0")
+    roi_crop = str(roi_crop).strip().lower()
+    if roi_crop not in {"off", "auto"}:
+        raise ValueError("roi_crop must be one of: off, auto")
 
     cap = cv2.VideoCapture(str(input_path))
     if not cap.isOpened():
@@ -235,6 +417,22 @@ def convert_video_to_bvh(
     frames_pts_raw: List[Optional[Dict[str, np.ndarray]]] = []
     detected_samples: List[Dict[str, np.ndarray]] = []
     detected_count = 0
+    roi_state: Optional[Tuple[int, int, int, int]] = None
+    roi_used_count = 0
+    roi_fallback_count = 0
+    roi_reset_count = 0
+    if opencv_enhance != "off" or max_frame_side > 0:
+        print(
+            f"[vid2model] opencv_preprocess enhance={opencv_enhance} max_frame_side={max_frame_side}",
+            file=sys.stderr,
+        )
+    if roi_crop == "auto":
+        print("[vid2model] roi_crop mode=auto", file=sys.stderr)
+
+    def detect_pose(frame_bgr: np.ndarray, ts_ms: int):
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        return pose.detect_for_video(mp_image, ts_ms)
 
     frame_idx = 0
     while True:
@@ -242,13 +440,49 @@ def convert_video_to_bvh(
         if not ok:
             break
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        frame_for_pose = preprocess_video_frame(frame, cv2, opencv_enhance, max_frame_side)
         ts_ms = int((frame_idx * 1000.0) / fps)
-        res = pose.detect_for_video(mp_image, ts_ms)
-        frame_idx += 1
+        frame_h, frame_w = frame_for_pose.shape[:2]
 
-        pts = extract_pose_points(res)
+        res = None
+        pts = None
+        bbox_for_roi: Optional[Tuple[float, float, float, float]] = None
+        used_roi = False
+        if roi_crop == "auto" and roi_state is not None:
+            x0, y0, x1, y1 = roi_state
+            roi_frame = frame_for_pose[y0:y1, x0:x1]
+            if roi_frame.size > 0:
+                used_roi = True
+                roi_used_count += 1
+                res = detect_pose(roi_frame, ts_ms)
+                pts = extract_pose_points(res)
+                roi_bbox = extract_pose_bbox_pixels(res, roi_frame.shape[1], roi_frame.shape[0])
+                if roi_bbox is not None:
+                    bbox_for_roi = (
+                        roi_bbox[0] + x0,
+                        roi_bbox[1] + y0,
+                        roi_bbox[2] + x0,
+                        roi_bbox[3] + y0,
+                    )
+            if pts is None:
+                roi_fallback_count += 1
+                used_roi = False
+                res = detect_pose(frame_for_pose, ts_ms + 1)
+                pts = extract_pose_points(res)
+                bbox_for_roi = extract_pose_bbox_pixels(res, frame_w, frame_h)
+        else:
+            res = detect_pose(frame_for_pose, ts_ms)
+            pts = extract_pose_points(res)
+            bbox_for_roi = extract_pose_bbox_pixels(res, frame_w, frame_h)
+
+        if roi_crop == "auto":
+            if pts is not None and bbox_for_roi is not None:
+                roi_state = update_tracking_roi(roi_state, bbox_for_roi, frame_w, frame_h)
+            elif pts is None and roi_state is not None and not used_roi:
+                roi_state = None
+                roi_reset_count += 1
+
+        frame_idx += 1
         frames_pts_raw.append(pts)
         if pts is not None:
             detected_count += 1
@@ -263,6 +497,15 @@ def convert_video_to_bvh(
 
     cap.release()
     pose.close()
+
+    if roi_crop == "auto":
+        print(
+            (
+                f"[vid2model] roi_stats used={roi_used_count} "
+                f"fallback_full={roi_fallback_count} resets={roi_reset_count}"
+            ),
+            file=sys.stderr,
+        )
 
     frames_pts, interpolated_frames, carried_frames = fill_pose_gaps(frames_pts_raw, max_gap_interpolate)
     print(

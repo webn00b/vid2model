@@ -6,6 +6,9 @@ VENV_DIR="$ROOT_DIR/.venv"
 PYTHON_BIN="${PYTHON_BIN:-}"
 MIN_PYTHON_MINOR=10
 MAX_PYTHON_MINOR=12
+OPENCV_ENHANCE="${OPENCV_ENHANCE:-off}"
+MAX_FRAME_SIDE="${MAX_FRAME_SIDE:-0}"
+ROI_CROP="${ROI_CROP:-off}"
 
 python_minor() {
   "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
@@ -70,6 +73,11 @@ Auto mode:
   Writes to output/<input_stem>.* (e.g. think.mp4 -> output/think.bvh).
   --all  Also write json/csv/npz/trc.
   --fbx  Also write fbx via Blender.
+
+Environment knobs:
+  OPENCV_ENHANCE=off|light|strong   OpenCV pre-processing before pose detection.
+  MAX_FRAME_SIDE=0|N                Resize frame so longest side <= N (0 disables).
+  ROI_CROP=off|auto                 Adaptive person ROI crop between frames.
 USAGE
 }
 
@@ -168,6 +176,15 @@ if [[ -n "$OUTPUT_NPZ" ]]; then
 fi
 if [[ -n "$OUTPUT_TRC" ]]; then
   CMD+=(--output-trc "$OUTPUT_TRC")
+fi
+if [[ -n "$OPENCV_ENHANCE" ]]; then
+  CMD+=(--opencv-enhance "$OPENCV_ENHANCE")
+fi
+if [[ -n "$MAX_FRAME_SIDE" ]]; then
+  CMD+=(--max-frame-side "$MAX_FRAME_SIDE")
+fi
+if [[ -n "$ROI_CROP" ]]; then
+  CMD+=(--roi-crop "$ROI_CROP")
 fi
 
 "${CMD[@]}"

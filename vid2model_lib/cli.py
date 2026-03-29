@@ -26,6 +26,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-detection-confidence", type=float)
     parser.add_argument("--min-tracking-confidence", type=float)
     parser.add_argument("--max-gap-interpolate", type=int, help="Interpolate missing detections for gaps up to N frames.")
+    parser.add_argument(
+        "--opencv-enhance",
+        choices=["off", "light", "strong"],
+        help="Optional OpenCV preprocessing before pose detection.",
+    )
+    parser.add_argument(
+        "--max-frame-side",
+        type=int,
+        help="Resize frame before detection so longest side is <= N pixels (0 disables).",
+    )
+    parser.add_argument(
+        "--roi-crop",
+        choices=["off", "auto"],
+        help="Adaptive ROI crop around detected person between frames.",
+    )
     parser.add_argument("--progress-every", type=int, help="Print progress every N frames (0 disables).")
     parser.add_argument("--check-tools", action="store_true", help="Validate local toolchain and exit.")
     return parser.parse_args()
@@ -102,6 +117,9 @@ def main() -> int:
     min_detection_confidence = float(merged("min_detection_confidence", 0.5))
     min_tracking_confidence = float(merged("min_tracking_confidence", 0.5))
     max_gap_interpolate = int(merged("max_gap_interpolate", 8))
+    opencv_enhance = str(merged("opencv_enhance", "off")).strip().lower()
+    max_frame_side = int(merged("max_frame_side", 0))
+    roi_crop = str(merged("roi_crop", "off")).strip().lower()
     progress_every = int(merged("progress_every", 100))
 
     if model_complexity not in (0, 1, 2):
@@ -112,6 +130,12 @@ def main() -> int:
         raise ValueError("min_tracking_confidence must be in range [0.0, 1.0]")
     if max_gap_interpolate < 0:
         raise ValueError("max_gap_interpolate must be >= 0")
+    if opencv_enhance not in ("off", "light", "strong"):
+        raise ValueError("opencv_enhance must be one of: off, light, strong")
+    if max_frame_side < 0:
+        raise ValueError("max_frame_side must be >= 0")
+    if roi_crop not in ("off", "auto"):
+        raise ValueError("roi_crop must be one of: off, auto")
     if progress_every < 0:
         raise ValueError("progress_every must be >= 0")
 
@@ -150,6 +174,9 @@ def main() -> int:
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
         max_gap_interpolate=max_gap_interpolate,
+        opencv_enhance=opencv_enhance,
+        max_frame_side=max_frame_side,
+        roi_crop=roi_crop,
         progress_every=progress_every,
     )
 
