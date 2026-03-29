@@ -218,10 +218,27 @@ python3 -m http.server 8080
 
 - загрузка `output/think.bvh` одной кнопкой,
 - загрузка любого локального `.bvh`,
+- загрузка персонажа (`.glb/.vrm`) и ретаргет BVH на его скелет (`Apply To Model`),
 - `Zoom +/-`,
 - `Play / Pause / Stop`,
 - timeline/scrub,
 - `Reset Camera`.
+
+Быстрый сценарий "анимация на персонаже" в браузере:
+
+1. `./convert.sh --auto think.mp4 --all`
+2. `python3 -m http.server 8080`
+3. открыть `http://localhost:8080/viewer/index.html`
+4. `Load output/think.bvh`
+5. выбрать файл персонажа `.glb`/`.vrm`
+6. нажать `Apply To Model`
+
+Если персонаж не двигается после `Apply To Model`:
+
+- смотри `status` справа: там показывается `matched` (сколько костей сопоставилось) и число `tracks`,
+- если `tracks = 0`, значит имена костей модели слишком нестандартные для авто-ретаргета.
+- viewer автоматически пробует несколько режимов ретаргета и показывает `mode` в статусе (`skeletonutils-*` или `rename-fallback`).
+- если у модели пустые имена костей, viewer автоматически даёт временные имена и пытается восстановить humanoid-цепочки по иерархии.
 
 ## Smoke-test
 
