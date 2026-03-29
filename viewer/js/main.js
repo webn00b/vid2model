@@ -59,6 +59,7 @@
     let modelAction = null;
     let modelMixers = [];
     let modelActions = [];
+    let modelLabel = "";
     let liveRetarget = null;
     let sourceOverlay = null;
     let isPlaying = false;
@@ -67,6 +68,7 @@
     const gltfLoader = new GLTFLoader();
     const clock = new THREE.Clock();
     const DIAG_PREFIX = "[vid2model/diag]";
+    const DIAG_EVENTS = new Set(["retarget-summary", "retarget-limbs", "retarget-fail"]);
     const SKELETON_COLOR = 0xff2d55;
     const SOURCE_POINT_COLOR = 0xfff400;
     const _overlayV1 = new THREE.Vector3();
@@ -76,16 +78,50 @@
     const _overlayV5 = new THREE.Vector3();
     const _liveYawQ = new THREE.Quaternion();
     const _liveAxisY = new THREE.Vector3(0, 1, 0);
+    const _rootYawQ = new THREE.Quaternion();
+    const _calibV1 = new THREE.Vector3();
+    const _calibV2 = new THREE.Vector3();
+    const _calibQ1 = new THREE.Quaternion();
     const _overlayPivot = new THREE.Vector3();
     const _overlayUpAxis = new THREE.Vector3(0, 1, 0);
 
     function diag(event, payload = {}) {
+      if (!DIAG_EVENTS.has(event)) return;
       console.log(DIAG_PREFIX, event, payload);
     }
 
     function shortErr(err, limit = 120) {
       const text = String(err?.message || err || "");
       return text.length > limit ? `${text.slice(0, limit)}...` : text;
+    }
+
+    function quantizeFacingYaw(rad) {
+      if (!Number.isFinite(rad)) return 0;
+      const abs = Math.abs(rad);
+      if (abs < THREE.MathUtils.degToRad(45)) return 0;
+      if (abs > THREE.MathUtils.degToRad(120)) return Math.sign(rad || 1) * Math.PI;
+      return rad;
+    }
+
+    function resetModelRootOrientation() {
+      if (!modelRoot) return;
+      const baseQ = modelRoot.userData?.__baseQuaternion;
+      if (baseQ?.isQuaternion) {
+        modelRoot.quaternion.copy(baseQ);
+        modelRoot.updateMatrixWorld(true);
+      }
+    }
+
+    function applyModelRootYaw(yawRad) {
+      if (!modelRoot || !Number.isFinite(yawRad) || Math.abs(yawRad) < 1e-5) return 0;
+      const baseQ = modelRoot.userData?.__baseQuaternion;
+      if (baseQ?.isQuaternion) {
+        modelRoot.quaternion.copy(baseQ);
+      }
+      _rootYawQ.setFromAxisAngle(_liveAxisY, yawRad);
+      modelRoot.quaternion.premultiply(_rootYawQ);
+      modelRoot.updateMatrixWorld(true);
+      return yawRad;
     }
 
     function setStatus(text) {
@@ -369,6 +405,7 @@
         scene.remove(modelRoot);
       }
       modelRoot = null;
+      modelLabel = "";
       modelSkinnedMesh = null;
       modelSkinnedMeshes = [];
       modelMixer = null;
@@ -412,7 +449,8 @@
       const hasRingToken =
         raw.includes("薬指") ||
         /(?:^|[^a-z0-9])ring(?:[0-9]|[^a-z0-9]|$)/.test(raw) ||
-        /(?:hand|finger)ring[0-9]?/.test(norm);
+        /(?:hand|finger)ring[0-9]?/.test(norm) ||
+        /(?:^|[^a-z])(?:left|right|l|r)?ring(?:metacarpal|proximal|intermediate|distal|tip|[0-9]|$)/.test(norm);
 
       let side = "";
       if (
@@ -762,6 +800,83 @@
       return best;
     }
 
+    function collectLimbDiagnostics(targetBones, sourceBones, namesTargetToSource, clip) {
+      const sourceByName = new Map((sourceBones || []).map((b) => [b.name, b]));
+      const sourceByCanonical = new Map();
+      const targetByCanonical = new Map();
+
+      for (const b of sourceBones || []) {
+        const key = canonicalBoneKey(b.name);
+        if (key && !sourceByCanonical.has(key)) sourceByCanonical.set(key, b);
+      }
+      for (const b of targetBones || []) {
+        const key = canonicalBoneKey(b.name);
+        if (key && !targetByCanonical.has(key)) targetByCanonical.set(key, b);
+      }
+
+      const trackByBone = new Map();
+      for (const t of clip?.tracks || []) {
+        const parsed = parseTrackName(t.name);
+        if (!parsed) continue;
+        const row = trackByBone.get(parsed.bone) || { hasQ: false, hasP: false };
+        if (parsed.property === "quaternion") row.hasQ = true;
+        if (parsed.property === "position") row.hasP = true;
+        trackByBone.set(parsed.bone, row);
+      }
+
+      const expectedParent = new Map([
+        ["leftLowerArm", "leftUpperArm"],
+        ["leftHand", "leftLowerArm"],
+        ["rightLowerArm", "rightUpperArm"],
+        ["rightHand", "rightLowerArm"],
+        ["leftLowerLeg", "leftUpperLeg"],
+        ["leftFoot", "leftLowerLeg"],
+        ["rightLowerLeg", "rightUpperLeg"],
+        ["rightFoot", "rightLowerLeg"],
+      ]);
+
+      const keys = [
+        "leftUpperArm",
+        "leftLowerArm",
+        "leftHand",
+        "rightUpperArm",
+        "rightLowerArm",
+        "rightHand",
+        "leftUpperLeg",
+        "leftLowerLeg",
+        "leftFoot",
+        "rightUpperLeg",
+        "rightLowerLeg",
+        "rightFoot",
+      ];
+
+      const entries = [];
+      for (const key of keys) {
+        const targetBone = targetByCanonical.get(key) || null;
+        const targetName = targetBone?.name || null;
+        const sourceName = targetName ? namesTargetToSource[targetName] || null : null;
+        const sourceBone = sourceName ? sourceByName.get(sourceName) || null : sourceByCanonical.get(key) || null;
+        const tracks = targetName ? trackByBone.get(targetName) : null;
+        const parentCanonical = targetBone?.parent ? canonicalBoneKey(targetBone.parent.name) : null;
+        const expected = expectedParent.get(key) || null;
+        const parentOk = expected ? parentCanonical === expected : true;
+
+        entries.push({
+          canonical: key,
+          target: targetName || "missing",
+          source: sourceBone?.name || sourceName || "missing",
+          hasQ: !!tracks?.hasQ,
+          hasP: !!tracks?.hasP,
+          parent: parentCanonical || "n/a",
+          expectedParent: expected || "n/a",
+          parentOk,
+        });
+      }
+
+      const issues = entries.filter((e) => e.target === "missing" || e.source === "missing" || !e.hasQ || !e.parentOk);
+      return { total: entries.length, issuesCount: issues.length, issues, entries };
+    }
+
     function buildBindingsForAttempt(attempt, clip) {
       const mixers = [];
       const actions = [];
@@ -988,6 +1103,40 @@
       }
     }
 
+    function getPrimaryChildDirectionLocal(bone, outDir) {
+      if (!bone || !outDir) return false;
+      bone.getWorldPosition(_calibV1);
+      let bestChild = null;
+      let bestLenSq = 0;
+      for (const child of bone.children || []) {
+        if (!child?.isBone) continue;
+        child.getWorldPosition(_calibV2);
+        const lenSq = _calibV2.distanceToSquared(_calibV1);
+        if (lenSq > bestLenSq) {
+          bestLenSq = lenSq;
+          bestChild = child;
+        }
+      }
+      if (!bestChild || bestLenSq < 1e-8) return false;
+      bestChild.getWorldPosition(_calibV2);
+      outDir.copy(_calibV2).sub(_calibV1);
+      bone.getWorldQuaternion(_calibQ1);
+      outDir.applyQuaternion(_calibQ1.invert());
+      if (outDir.lengthSq() < 1e-10) return false;
+      outDir.normalize();
+      return true;
+    }
+
+    function buildLocalAxisCorrection(sourceBone, targetBone) {
+      const sourceDir = new THREE.Vector3();
+      const targetDir = new THREE.Vector3();
+      if (!getPrimaryChildDirectionLocal(sourceBone, sourceDir)) return null;
+      if (!getPrimaryChildDirectionLocal(targetBone, targetDir)) return null;
+      const dot = Math.max(-1, Math.min(1, sourceDir.dot(targetDir)));
+      if (dot > 0.9995) return null;
+      return new THREE.Quaternion().setFromUnitVectors(sourceDir, targetDir).normalize();
+    }
+
     function buildLiveRetargetPlan(skinnedMeshes, sourceBones, namesTargetToSource) {
       const sourceByName = new Map(sourceBones.map((b) => [b.name, b]));
       const uniqueSkeletons = [];
@@ -1015,6 +1164,9 @@
             sourceRestQ: new THREE.Quaternion(),
             targetRestPos: new THREE.Vector3(),
             sourceRestPos: new THREE.Vector3(),
+            axisCorrectionQ: new THREE.Quaternion(),
+            axisCorrectionQInv: new THREE.Quaternion(),
+            hasAxisCorrection: false,
             isHips:
               canonicalBoneKey(targetBone.name) === "hips" ||
               canonicalBoneKey(sourceBone.name) === "hips",
@@ -1042,6 +1194,17 @@
         pair.sourceRestQ.copy(pair.source.quaternion);
         pair.targetRestPos.copy(pair.target.position);
         pair.sourceRestPos.copy(pair.source.position);
+      }
+
+      let calibratedPairs = 0;
+      for (const pair of pairs) {
+        if (pair.isHips) continue;
+        const corr = buildLocalAxisCorrection(pair.source, pair.target);
+        if (!corr) continue;
+        pair.axisCorrectionQ.copy(corr);
+        pair.axisCorrectionQInv.copy(corr).invert();
+        pair.hasAxisCorrection = true;
+        calibratedPairs += 1;
       }
 
       let posScale = 1;
@@ -1075,12 +1238,13 @@
       const targetRefBones = uniqueSkeletons[0]?.bones || [];
       const rawYawOffset = estimateFacingYawOffset(sourceBones, targetRefBones);
       const absRawYaw = Math.abs(rawYawOffset);
-      let yawOffset = rawYawOffset;
+      // retarget yaw should rotate target-facing direction toward source-facing direction.
+      let yawOffset = -rawYawOffset;
       // Keep yaw correction conservative: either no correction or a clean 180deg flip.
       if (absRawYaw < THREE.MathUtils.degToRad(45)) {
         yawOffset = 0;
       } else if (absRawYaw > THREE.MathUtils.degToRad(120)) {
-        yawOffset = Math.sign(rawYawOffset || 1) * Math.PI;
+        yawOffset = Math.sign(yawOffset || 1) * Math.PI;
       }
 
       return {
@@ -1088,6 +1252,7 @@
         uniqueSkeletons,
         posScale,
         yawOffset,
+        calibratedPairs,
       };
     }
 
@@ -1103,6 +1268,9 @@
       }
       for (const pair of plan.pairs) {
         _liveQ.copy(pair.sourceRestQ).invert().multiply(pair.source.quaternion);
+        if (pair.hasAxisCorrection) {
+          _liveQ.premultiply(pair.axisCorrectionQ).multiply(pair.axisCorrectionQInv);
+        }
         if (pair.isHips && Math.abs(yaw) > 1e-5) {
           // Apply a constant facing offset at hips so the whole body aligns in world space.
           pair.target.quaternion.copy(pair.targetRestQ).multiply(_liveYawQ).multiply(_liveQ).normalize();
@@ -1367,6 +1535,8 @@
       }
 
       try {
+        resetModelRootOrientation();
+        const modelIsEn0 = /(^|[\\/])en_0\.vrm$/i.test(modelLabel);
         const { names, matched, unmatchedSample, canonicalCandidates, unmatchedHumanoid, sourceMatched } = buildRetargetMap(
           modelSkinnedMesh.skeleton.bones,
           sourceResult.skeleton.bones
@@ -1558,6 +1728,29 @@
           return;
         }
 
+        if (
+          modelIsEn0 &&
+          selectedAttempt?.label?.startsWith("rename-fallback") &&
+          skeletonSkinned
+        ) {
+          const skeletonBindings = buildBindingsForAttempt(skeletonSkinned, skeletonSkinned.clip);
+          if (skeletonBindings.mixers.length) {
+            const skeletonProbe = probeMotionForBindings(skeletonBindings, skeletonSkinned.clip);
+            const skeletonPoseError = computePoseMatchError(skeletonBindings, skeletonProbe.sampleTime);
+            const resolvedGap = selectedAttempt.resolvedTracks - skeletonSkinned.resolvedTracks;
+            const poseGap = skeletonPoseError - selectedPoseError;
+            const shouldPreferSkeleton =
+              resolvedGap <= 2 &&
+              (!Number.isFinite(skeletonPoseError) || !Number.isFinite(selectedPoseError) || poseGap <= 0.35);
+            if (shouldPreferSkeleton) {
+              selectedAttempt = skeletonSkinned;
+              selectedBindings = skeletonBindings;
+              selectedProbe = skeletonProbe;
+              selectedPoseError = skeletonPoseError;
+            }
+          }
+        }
+
         modelMixers = selectedBindings.mixers;
         modelActions = selectedBindings.actions;
         modelMixer = modelMixers[0];
@@ -1573,7 +1766,20 @@
         const strongFacingMismatch = Math.abs(rawFacingYaw) > THREE.MathUtils.degToRad(100);
         const weakMotion = !!selectedProbe && selectedProbe.score < 0.5;
         const highPoseError = Number.isFinite(selectedPoseError) && selectedPoseError > 0.6;
-        const useLiveDelta = isRenameFallback || strongFacingMismatch || weakMotion || highPoseError;
+        const selectedIsSkeletonUtils = selectedAttempt.label.startsWith("skeletonutils");
+        const useLiveDelta =
+          isRenameFallback ||
+          (selectedIsSkeletonUtils && modelIsEn0 && (highPoseError || strongFacingMismatch)) ||
+          (!selectedIsSkeletonUtils && (strongFacingMismatch || weakMotion || highPoseError));
+        let rootYawCorrection = 0;
+        if (selectedIsSkeletonUtils && strongFacingMismatch && !useLiveDelta) {
+          rootYawCorrection = applyModelRootYaw(quantizeFacingYaw(-rawFacingYaw));
+          if (sourceOverlay) {
+            const effectiveOverlayYaw = rawFacingYaw + rootYawCorrection;
+            sourceOverlay.overlayYaw = Number.isFinite(effectiveOverlayYaw) ? effectiveOverlayYaw : 0;
+            updateSourceOverlay();
+          }
+        }
         if (useLiveDelta) {
           const livePlan = buildLiveRetargetPlan(
             modelSkinnedMeshes,
@@ -1582,6 +1788,11 @@
           );
           if (livePlan && livePlan.pairs.length > 0) {
             liveRetarget = livePlan;
+            if (sourceOverlay) {
+              const effectiveOverlayYaw = rawFacingYaw + liveRetarget.yawOffset;
+              sourceOverlay.overlayYaw = Number.isFinite(effectiveOverlayYaw) ? effectiveOverlayYaw : 0;
+              updateSourceOverlay();
+            }
             applyLiveRetargetPose(liveRetarget);
             modelMixers = [];
             modelActions = [];
@@ -1603,6 +1814,12 @@
         }
         const candidateInfo = canonicalCandidates > 0 ? `, humanoid targets ${matched}/${canonicalCandidates}` : "";
         const activeMeshCount = liveRetarget ? liveRetarget.uniqueSkeletons.length : modelMixers.length;
+        const limbDiag = collectLimbDiagnostics(
+          modelSkinnedMesh.skeleton.bones,
+          sourceResult.skeleton.bones,
+          names,
+          clip
+        );
         setStatus(
           `Model retargeted (source ${sourceMatched}/${sourceTotal}${candidateInfo}, all ${matched}/${total}, tracks ${clip.tracks.length}, mode ${selectedModeLabel}, active meshes ${activeMeshCount}).${lowMatch}`
         );
@@ -1622,6 +1839,7 @@
                 pairs: liveRetarget.pairs.length,
                 skeletons: liveRetarget.uniqueSkeletons.length,
                 posScale: liveRetarget.posScale,
+                calibratedPairs: liveRetarget.calibratedPairs || 0,
                 yawOffsetDeg: Number((liveRetarget.yawOffset * 180 / Math.PI).toFixed(2)),
               }
             : null,
@@ -1646,6 +1864,7 @@
                 pairs: liveRetarget.pairs.length,
                 skeletons: liveRetarget.uniqueSkeletons.length,
                 posScale: Number(liveRetarget.posScale.toFixed(6)),
+                calibratedPairs: liveRetarget.calibratedPairs || 0,
                 yawOffsetDeg: Number((liveRetarget.yawOffset * 180 / Math.PI).toFixed(2)),
               }
             : null,
@@ -1660,8 +1879,16 @@
           tracks: clip.tracks.length,
           resolvedTracks: selectedAttempt.resolvedTracks,
           poseError: Number.isFinite(selectedPoseError) ? Number(selectedPoseError.toFixed(4)) : null,
+          rootYawDeg: Number((rootYawCorrection * 180 / Math.PI).toFixed(2)),
           yawOffsetDeg: liveRetarget ? Number((liveRetarget.yawOffset * 180 / Math.PI).toFixed(2)) : 0,
+          calibratedPairs: liveRetarget ? liveRetarget.calibratedPairs || 0 : 0,
           liveDelta: !!liveRetarget,
+        });
+        diag("retarget-limbs", {
+          mode: selectedModeLabel,
+          issues: limbDiag.issuesCount,
+          total: limbDiag.total,
+          details: limbDiag.issues.slice(0, 12),
         });
       } catch (err) {
         console.error(err);
@@ -1717,11 +1944,13 @@
     function applyParsedModel(gltf, label) {
       clearModel();
       modelRoot = gltf.scene || gltf.scenes?.[0] || null;
+      modelLabel = label || "";
       if (!modelRoot) {
         setStatus(`Failed to parse model: ${label}`);
         return;
       }
       scene.add(modelRoot);
+      modelRoot.userData.__baseQuaternion = modelRoot.quaternion.clone();
       modelSkinnedMeshes = findSkinnedMeshes(modelRoot);
       modelSkinnedMesh = modelSkinnedMeshes[0] || null;
       if (!modelSkinnedMesh) {
