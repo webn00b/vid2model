@@ -102,6 +102,34 @@
       color: var(--muted);
       z-index: 2;
     }
+    .retarget-fab {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      z-index: 20;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(15, 118, 110, 0.35);
+    }
+    .retarget-fab:hover {
+      filter: brightness(1.05);
+    }
+    .retarget-fab:active {
+      transform: translateY(1px);
+    }
+    @media (max-width: 720px) {
+      .retarget-fab {
+        right: 10px;
+        bottom: 10px;
+        padding: 11px 14px;
+        font-size: 13px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -133,6 +161,7 @@
       <div id="hint">LMB rotate, RMB pan, wheel zoom</div>
     </div>
   </div>
+  <button id="retarget-fab" class="retarget-fab" type="button" title="Apply BVH to model">Retarget</button>
 
   <script type="importmap">
     {
