@@ -43,7 +43,7 @@ export function evaluateRootYawCandidates({
       const hips = Number.isFinite(alignment.hipsPosErrNorm)
         ? alignment.hipsPosErrNorm
         : (Number.isFinite(alignment.hipsPosErr) ? alignment.hipsPosErr : avgPosErr);
-      const score = avgPosErr + alignment.avgRotErrDeg * 0.003 + hips * 1.25;
+      const score = avgPosErr + alignment.avgRotErrDeg * 0.0012 + hips * 1.25;
       rows.push({
         yawRad: appliedYaw,
         yawDeg: Number((appliedYaw * 180 / Math.PI).toFixed(2)),
