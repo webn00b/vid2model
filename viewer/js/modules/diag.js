@@ -7,6 +7,7 @@ const DIAG_EVENTS = new Set([
   "retarget-fail",
   "retarget-alignment",
   "retarget-map-details",
+  "retarget-topology-fallback",
   "retarget-live-delta",
   "retarget-root-yaw",
   "retarget-hips-align",

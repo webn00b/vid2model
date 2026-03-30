@@ -839,6 +839,154 @@
       return { missingBefore, autoNamed, inferredCanonical };
     }
 
+    function isLowMatchRetargetMap(result, sourceTotal) {
+      const targetCoverage = result.canonicalCandidates > 0 ? result.matched / result.canonicalCandidates : 0;
+      const sourceCoverage = sourceTotal > 0 ? result.sourceMatched / sourceTotal : 0;
+      return (
+        result.canonicalCandidates === 0 ||
+        targetCoverage < 0.75 ||
+        (targetCoverage < 0.9 && sourceCoverage < 0.35)
+      );
+    }
+
+    function isRetargetMapBetter(candidate, baseline) {
+      if (!candidate) return false;
+      if (!baseline) return true;
+      if (candidate.matched !== baseline.matched) return candidate.matched > baseline.matched;
+      if (candidate.sourceMatched !== baseline.sourceMatched) return candidate.sourceMatched > baseline.sourceMatched;
+      return Object.keys(candidate.names || {}).length > Object.keys(baseline.names || {}).length;
+    }
+
+    function buildTopologyFallbackRenamePlan(skinnedMesh, baseResult, canonicalFilter) {
+      const bones = skinnedMesh?.skeleton?.bones || [];
+      if (!bones.length) return null;
+
+      skinnedMesh.updateMatrixWorld(true);
+      const inferred = inferHumanoidCanonicalNamesFromTopology(bones);
+      if (!inferred.size) return null;
+
+      const reservedCanonical = new Set();
+      for (const targetName of Object.keys(baseResult?.names || {})) {
+        const canonical = canonicalBoneKey(targetName);
+        if (canonical) reservedCanonical.add(canonical);
+      }
+
+      const reservedNames = new Set(
+        bones
+          .map((bone) => String(bone?.name || "").trim())
+          .filter((name) => !!name)
+      );
+
+      const plan = [];
+      for (const [bone, canonical] of inferred.entries()) {
+        if (!canonical) continue;
+        if (canonicalFilter && !canonicalFilter.has(canonical)) continue;
+        if (baseResult?.names?.[bone.name]) continue;
+
+        const currentCanonical = canonicalBoneKey(bone.name);
+        if (currentCanonical === canonical) continue;
+        if (reservedCanonical.has(canonical)) continue;
+        if (reservedNames.has(canonical) && bone.name !== canonical) continue;
+
+        plan.push({
+          bone,
+          from: bone.name,
+          to: canonical,
+          previousCanonical: currentCanonical || null,
+        });
+        reservedCanonical.add(canonical);
+        reservedNames.delete(bone.name);
+        reservedNames.add(canonical);
+      }
+
+      if (!plan.length) return null;
+      return {
+        plan,
+        sample: plan.slice(0, 12).map((row) => ({
+          from: row.from,
+          to: row.to,
+          previousCanonical: row.previousCanonical,
+        })),
+      };
+    }
+
+    function applyBoneRenamePlan(plan) {
+      for (const row of plan || []) {
+        row.bone.name = row.to;
+      }
+    }
+
+    function revertBoneRenamePlan(plan) {
+      for (const row of plan || []) {
+        row.bone.name = row.from;
+      }
+    }
+
+    function maybeApplyTopologyFallback(skinnedMesh, sourceBones, canonicalFilter, baseResult) {
+      const sourceTotal = sourceBones?.length || 0;
+      const shouldTry = isLowMatchRetargetMap(baseResult, sourceTotal);
+      const baseMappedPairs = Object.keys(baseResult?.names || {}).length;
+      const baseTargetCoverage =
+        baseResult?.canonicalCandidates > 0 ? baseResult.matched / baseResult.canonicalCandidates : 0;
+      const baseSourceCoverage = sourceTotal > 0 ? baseResult.sourceMatched / sourceTotal : 0;
+
+      if (!shouldTry) {
+        return {
+          result: baseResult,
+          attempted: false,
+          applied: false,
+          reason: "coverage-ok",
+        };
+      }
+
+      const renameInfo = buildTopologyFallbackRenamePlan(skinnedMesh, baseResult, canonicalFilter);
+      if (!renameInfo?.plan?.length) {
+        return {
+          result: baseResult,
+          attempted: true,
+          applied: false,
+          reason: "no-inferred-renames",
+          before: {
+            mappedPairs: baseMappedPairs,
+            targetCoverage: Number(baseTargetCoverage.toFixed(4)),
+            sourceCoverage: Number(baseSourceCoverage.toFixed(4)),
+          },
+        };
+      }
+
+      applyBoneRenamePlan(renameInfo.plan);
+      const topologyResult = buildRetargetMap(skinnedMesh.skeleton.bones, sourceBones, { canonicalFilter });
+      const topologyMappedPairs = Object.keys(topologyResult.names || {}).length;
+      const topologyTargetCoverage =
+        topologyResult.canonicalCandidates > 0 ? topologyResult.matched / topologyResult.canonicalCandidates : 0;
+      const topologySourceCoverage =
+        sourceTotal > 0 ? topologyResult.sourceMatched / sourceTotal : 0;
+      const better = isRetargetMapBetter(topologyResult, baseResult);
+
+      if (!better) {
+        revertBoneRenamePlan(renameInfo.plan);
+      }
+
+      return {
+        result: better ? topologyResult : baseResult,
+        attempted: true,
+        applied: better,
+        reason: better ? "improved-coverage" : "not-better",
+        inferredRenames: renameInfo.plan.length,
+        sample: renameInfo.sample,
+        before: {
+          mappedPairs: baseMappedPairs,
+          targetCoverage: Number(baseTargetCoverage.toFixed(4)),
+          sourceCoverage: Number(baseSourceCoverage.toFixed(4)),
+        },
+        after: {
+          mappedPairs: topologyMappedPairs,
+          targetCoverage: Number(topologyTargetCoverage.toFixed(4)),
+          sourceCoverage: Number(topologySourceCoverage.toFixed(4)),
+        },
+      };
+    }
+
     function applyBvhToModel() {
       if (!sourceResult) {
         setStatus("Load BVH first.");
@@ -865,11 +1013,25 @@
         const canonicalFilter = getCanonicalFilterForStage(retargetStage);
         resetModelRootOrientation();
         const modelIsEn0 = /(^|[\\/])en_0\.vrm$/i.test(modelLabel);
-        const { names, matched, unmatchedSample, canonicalCandidates, unmatchedHumanoid, sourceMatched } = buildRetargetMap(
+        const initialMap = buildRetargetMap(
           modelSkinnedMesh.skeleton.bones,
           sourceResult.skeleton.bones,
           { canonicalFilter }
         );
+        const topologyFallback = maybeApplyTopologyFallback(
+          modelSkinnedMesh,
+          sourceResult.skeleton.bones,
+          canonicalFilter,
+          initialMap
+        );
+        const {
+          names,
+          matched,
+          unmatchedSample,
+          canonicalCandidates,
+          unmatchedHumanoid,
+          sourceMatched,
+        } = topologyFallback.result;
         const mappedPairs = Object.keys(names).length;
         diag("retarget-input", {
           stage: retargetStage,
@@ -879,6 +1041,16 @@
           mappedPairs,
           uniqueSourceMapped: sourceMatched,
           humanoidMatched: canonicalCandidates > 0 ? `${matched}/${canonicalCandidates}` : "n/a",
+        });
+        diag("retarget-topology-fallback", {
+          stage: retargetStage,
+          attempted: topologyFallback.attempted,
+          applied: topologyFallback.applied,
+          reason: topologyFallback.reason,
+          inferredRenames: topologyFallback.inferredRenames || 0,
+          before: topologyFallback.before || null,
+          after: topologyFallback.after || null,
+          sample: topologyFallback.sample || [],
         });
 
         const retargetAttempts = [];
@@ -1142,9 +1314,10 @@
         const highPoseError = Number.isFinite(selectedPoseError) && selectedPoseError > 0.6;
         const selectedIsSkeletonUtils = selectedAttempt.label.startsWith("skeletonutils");
         const fullHumanoidMatch = canonicalCandidates > 0 && matched === canonicalCandidates;
+        const severeFacingPoseMismatch = strongFacingMismatch && highPoseError;
         const autoUseLiveDelta =
           isRenameFallback ||
-          (selectedIsSkeletonUtils && modelIsEn0 && !fullHumanoidMatch && (highPoseError || strongFacingMismatch)) ||
+          (selectedIsSkeletonUtils && modelIsEn0 && (severeFacingPoseMismatch || (!fullHumanoidMatch && (highPoseError || strongFacingMismatch)))) ||
           (!selectedIsSkeletonUtils && (strongFacingMismatch || weakMotion || highPoseError));
         const forcedLiveDelta = getLiveDeltaOverride(window);
         const useLiveDelta = forcedLiveDelta === null ? autoUseLiveDelta : forcedLiveDelta;
@@ -1162,6 +1335,7 @@
             strongFacingMismatch,
             weakMotion,
             highPoseError,
+            severeFacingPoseMismatch,
           },
         });
         let rootYawCorrection = 0;
@@ -1337,7 +1511,11 @@
                   ),
                 }
               : attemptedBodyCalibration;
-          if (filteredBodyCalibration?.entries?.length) {
+          const suspiciousBodyScale =
+            !!filteredBodyCalibration &&
+            Number.isFinite(filteredBodyCalibration.globalScale) &&
+            (filteredBodyCalibration.globalScale < 0.2 || filteredBodyCalibration.globalScale > 5);
+          if (filteredBodyCalibration?.entries?.length && !suspiciousBodyScale) {
             applyBoneLengthCalibration(filteredBodyCalibration, modelRoot);
             const bodyErrAfter = measureBodyErr();
             const hasBefore = Number.isFinite(bodyErrBefore);
@@ -1358,6 +1536,26 @@
               applied: keepCalibration,
               bodyErrBefore: Number.isFinite(bodyErrBefore) ? Number(bodyErrBefore.toFixed(5)) : null,
               bodyErrAfter: Number.isFinite(bodyErrAfter) ? Number(bodyErrAfter.toFixed(5)) : null,
+              metric: retargetStage === "body" ? "body-core" : "body-full",
+              bones: filteredBodyCalibration.entries.length,
+              globalScale: filteredBodyCalibration.globalScale,
+              clampedCount: filteredBodyCalibration.clampedCount,
+              sample: filteredBodyCalibration.entries.slice(0, 8).map((e) => ({
+                    canonical: e.canonical,
+                    scale: e.scale,
+                    rawScale: e.rawScale,
+                    sourceLen: e.sourceLen,
+                    targetLen: e.targetLen,
+                    expectedTargetLen: e.expectedTargetLen,
+                  })),
+            });
+          } else if (filteredBodyCalibration?.entries?.length) {
+            diag("retarget-body-calibration", {
+              stage: retargetStage,
+              applied: false,
+              skippedReason: "suspicious-global-scale",
+              bodyErrBefore: Number.isFinite(bodyErrBefore) ? Number(bodyErrBefore.toFixed(5)) : null,
+              bodyErrAfter: Number.isFinite(bodyErrBefore) ? Number(bodyErrBefore.toFixed(5)) : null,
               metric: retargetStage === "body" ? "body-core" : "body-full",
               bones: filteredBodyCalibration.entries.length,
               globalScale: filteredBodyCalibration.globalScale,
