@@ -1,6 +1,77 @@
 import * as THREE from "three";
 import { canonicalBoneKey } from "./bone-utils.js";
 
+const PARENT_RELATIVE_REST_DELTA_CANONICAL = new Set([
+  "spine",
+  "chest",
+  "upperChest",
+  "neck",
+  "head",
+  "leftShoulder",
+  "rightShoulder",
+  "leftUpperArm",
+  "rightUpperArm",
+  "leftLowerArm",
+  "rightLowerArm",
+  "leftHand",
+  "rightHand",
+  "leftLowerLeg",
+  "rightLowerLeg",
+]);
+
+const WORLD_REST_TRANSFER_CANONICAL = new Set([
+  "leftUpperLeg",
+  "rightUpperLeg",
+  "leftFoot",
+  "rightFoot",
+  "leftToes",
+  "rightToes",
+]);
+const NO_CACHE_REST_CALIBRATION_CANONICAL = new Set([
+  "leftUpperLeg",
+  "rightUpperLeg",
+  "leftLowerLeg",
+  "rightLowerLeg",
+  "leftFoot",
+  "rightFoot",
+  "leftToes",
+  "rightToes",
+]);
+const _worldTransferQ1 = new THREE.Quaternion();
+const _worldTransferQ2 = new THREE.Quaternion();
+const _worldTransferQ3 = new THREE.Quaternion();
+
+function getBoneDepth(bone) {
+  let depth = 0;
+  let node = bone?.parent || null;
+  while (node) {
+    depth += 1;
+    node = node.parent || null;
+  }
+  return depth;
+}
+
+function pairProfileKey(targetName, sourceName) {
+  return `${targetName || ""}=>${sourceName || ""}`;
+}
+
+function serializeQuaternion(q) {
+  if (!q?.isQuaternion) return null;
+  return [
+    Number(q.x.toFixed(8)),
+    Number(q.y.toFixed(8)),
+    Number(q.z.toFixed(8)),
+    Number(q.w.toFixed(8)),
+  ];
+}
+
+function deserializeQuaternion(data, outQ) {
+  if (!Array.isArray(data) || data.length !== 4 || !outQ) return false;
+  if (!data.every((v) => Number.isFinite(v))) return false;
+  outQ.set(data[0], data[1], data[2], data[3]).normalize();
+  return true;
+}
+
 export function resetModelRootOrientation({ modelRoot, getModelSkeletonRootBone }) {
   if (!modelRoot) return;
   const baseQ = modelRoot.userData?.__baseQuaternion;
@@ -212,13 +283,18 @@ export function createSourceOverlay({
 
 export function buildLiveRetargetPlan({
   skinnedMeshes,
+  targetBones = null,
   sourceBones,
   namesTargetToSource,
   mixer,
   modelRoot,
-  buildLocalAxisCorrection,
+  buildRestOrientationCorrection,
+  cachedProfile = null,
 }) {
   const sourceByName = new Map(sourceBones.map((b) => [b.name, b]));
+  const cachedPairMap = new Map(
+    ((cachedProfile?.pairs || []).map((pair) => [pairProfileKey(pair.target, pair.source), pair]))
+  );
   const uniqueSkeletons = [];
   const seenSkeletonIds = new Set();
   for (const mesh of skinnedMeshes || []) {
@@ -231,8 +307,9 @@ export function buildLiveRetargetPlan({
   }
 
   const pairs = [];
-  for (const skeleton of uniqueSkeletons) {
-    for (const targetBone of skeleton.bones) {
+  const explicitTargetBones = Array.isArray(targetBones) ? targetBones.filter((bone) => bone?.isBone) : [];
+  if (explicitTargetBones.length) {
+    for (const targetBone of explicitTargetBones) {
       const sourceName = namesTargetToSource[targetBone.name];
       if (!sourceName) continue;
       const sourceBone = sourceByName.get(sourceName);
@@ -240,13 +317,58 @@ export function buildLiveRetargetPlan({
       pairs.push({
         target: targetBone,
         source: sourceBone,
+        canonical:
+          canonicalBoneKey(targetBone.name) ||
+          canonicalBoneKey(sourceBone.name) ||
+          "",
+        depth: getBoneDepth(targetBone),
         targetRestQ: new THREE.Quaternion(),
         sourceRestQ: new THREE.Quaternion(),
+        targetRestWorldQ: new THREE.Quaternion(),
+        sourceRestWorldQ: new THREE.Quaternion(),
+        sourceRestWorldQInv: new THREE.Quaternion(),
         targetRestPos: new THREE.Vector3(),
         sourceRestPos: new THREE.Vector3(),
-        axisCorrectionQ: new THREE.Quaternion(),
-        axisCorrectionQInv: new THREE.Quaternion(),
-        hasAxisCorrection: false,
+        restWorldDeltaQ: new THREE.Quaternion(),
+        restCorrectionQ: new THREE.Quaternion(),
+        restCorrectionQInv: new THREE.Quaternion(),
+        hasRestCorrection: false,
+        useParentRelativeRestDelta: false,
+        useWorldRestTransfer: false,
+        isHips:
+          canonicalBoneKey(targetBone.name) === "hips" ||
+          canonicalBoneKey(sourceBone.name) === "hips",
+      });
+    }
+  }
+  for (const skeleton of uniqueSkeletons) {
+    for (const targetBone of skeleton.bones) {
+      if (explicitTargetBones.length && explicitTargetBones.includes(targetBone)) continue;
+      const sourceName = namesTargetToSource[targetBone.name];
+      if (!sourceName) continue;
+      const sourceBone = sourceByName.get(sourceName);
+      if (!sourceBone) continue;
+      pairs.push({
+        target: targetBone,
+        source: sourceBone,
+        canonical:
+          canonicalBoneKey(targetBone.name) ||
+          canonicalBoneKey(sourceBone.name) ||
+          "",
+        depth: getBoneDepth(targetBone),
+        targetRestQ: new THREE.Quaternion(),
+        sourceRestQ: new THREE.Quaternion(),
+        targetRestWorldQ: new THREE.Quaternion(),
+        sourceRestWorldQ: new THREE.Quaternion(),
+        sourceRestWorldQInv: new THREE.Quaternion(),
+        targetRestPos: new THREE.Vector3(),
+        sourceRestPos: new THREE.Vector3(),
+        restWorldDeltaQ: new THREE.Quaternion(),
+        restCorrectionQ: new THREE.Quaternion(),
+        restCorrectionQInv: new THREE.Quaternion(),
+        hasRestCorrection: false,
+        useParentRelativeRestDelta: false,
+        useWorldRestTransfer: false,
         isHips:
           canonicalBoneKey(targetBone.name) === "hips" ||
           canonicalBoneKey(sourceBone.name) === "hips",
@@ -255,6 +377,7 @@ export function buildLiveRetargetPlan({
   }
 
   if (!pairs.length) return null;
+  pairs.sort((a, b) => a.depth - b.depth);
 
   const sourceTime = mixer ? mixer.time : 0;
   if (mixer) {
@@ -268,6 +391,9 @@ export function buildLiveRetargetPlan({
   for (const pair of pairs) {
     pair.targetRestQ.copy(pair.target.quaternion);
     pair.sourceRestQ.copy(pair.source.quaternion);
+    pair.target.getWorldQuaternion(pair.targetRestWorldQ);
+    pair.source.getWorldQuaternion(pair.sourceRestWorldQ);
+    pair.sourceRestWorldQInv.copy(pair.sourceRestWorldQ).invert();
     pair.targetRestPos.copy(pair.target.position);
     pair.sourceRestPos.copy(pair.source.position);
   }
@@ -275,22 +401,64 @@ export function buildLiveRetargetPlan({
   let calibratedPairs = 0;
   for (const pair of pairs) {
     if (pair.isHips) continue;
-    const corr = buildLocalAxisCorrection(pair.source, pair.target);
+    if (WORLD_REST_TRANSFER_CANONICAL.has(pair.canonical) && pair.target.parent) {
+      pair.useWorldRestTransfer = true;
+      calibratedPairs += 1;
+      continue;
+    }
+    const shouldUseCachedPair = !NO_CACHE_REST_CALIBRATION_CANONICAL.has(pair.canonical);
+    const cachedPair = shouldUseCachedPair
+      ? (cachedPairMap.get(pairProfileKey(pair.target.name, pair.source.name)) || null)
+      : null;
+    if (cachedPair) {
+      if (
+        cachedPair.useParentRelativeRestDelta &&
+        PARENT_RELATIVE_REST_DELTA_CANONICAL.has(pair.canonical) &&
+        deserializeQuaternion(cachedPair.restWorldDeltaQ, pair.restWorldDeltaQ) &&
+        pair.target.parent
+      ) {
+        pair.useParentRelativeRestDelta = true;
+        calibratedPairs += 1;
+        continue;
+      }
+      if (
+        cachedPair.hasRestCorrection &&
+        deserializeQuaternion(cachedPair.restCorrectionQ, pair.restCorrectionQ)
+      ) {
+        pair.restCorrectionQInv.copy(pair.restCorrectionQ).invert();
+        pair.hasRestCorrection = true;
+        calibratedPairs += 1;
+        continue;
+      }
+    }
+    pair.source.getWorldQuaternion(pair.restCorrectionQInv);
+    pair.target.getWorldQuaternion(pair.restWorldDeltaQ);
+    pair.restWorldDeltaQ.premultiply(pair.restCorrectionQInv.invert()).normalize();
+    if (
+      PARENT_RELATIVE_REST_DELTA_CANONICAL.has(pair.canonical) &&
+      pair.target.parent
+    ) {
+      pair.useParentRelativeRestDelta = true;
+      calibratedPairs += 1;
+      continue;
+    }
+    const corr = buildRestOrientationCorrection?.(pair.source, pair.target) || null;
     if (!corr) continue;
-    pair.axisCorrectionQ.copy(corr);
-    pair.axisCorrectionQInv.copy(corr).invert();
-    pair.hasAxisCorrection = true;
+    pair.restCorrectionQ.copy(corr);
+    pair.restCorrectionQInv.copy(corr).invert();
+    pair.hasRestCorrection = true;
     calibratedPairs += 1;
   }
 
   let posScale = 1;
   try {
     const sourceBox = new THREE.Box3().setFromPoints(sourceBones.map((b) => b.getWorldPosition(new THREE.Vector3())));
-    const targetBones = [];
+    const targetEvalBones = [];
+    for (const bone of explicitTargetBones) targetEvalBones.push(bone);
     for (const skeleton of uniqueSkeletons) {
-      for (const b of skeleton.bones) targetBones.push(b);
+      for (const b of skeleton.bones) targetEvalBones.push(b);
     }
-    const targetBox = new THREE.Box3().setFromPoints(targetBones.map((b) => b.getWorldPosition(new THREE.Vector3())));
+    const targetBox = new THREE.Box3().setFromPoints(targetEvalBones.map((b) => b.getWorldPosition(new THREE.Vector3())));
     const sourceHWorld = Math.max(1e-6, sourceBox.max.y - sourceBox.min.y);
     const targetH = Math.max(1e-6, targetBox.max.y - targetBox.min.y);
     const sourceRootScale = new THREE.Vector3(1, 1, 1);
@@ -309,7 +477,7 @@ export function buildLiveRetargetPlan({
   }
   modelRoot?.updateMatrixWorld(true);
 
-  const targetRefBones = uniqueSkeletons[0]?.bones || [];
+  const targetRefBones = explicitTargetBones.length ? explicitTargetBones : (uniqueSkeletons[0]?.bones || []);
   const rawYawOffset = estimateFacingYawOffset(sourceBones, targetRefBones);
   const absRawYaw = Math.abs(rawYawOffset);
   let yawOffset = -rawYawOffset;
@@ -317,6 +485,12 @@ export function buildLiveRetargetPlan({
     yawOffset = 0;
   } else if (absRawYaw > THREE.MathUtils.degToRad(120)) {
     yawOffset = Math.sign(yawOffset || 1) * Math.PI;
+  }
+  if (Number.isFinite(cachedProfile?.posScale) && cachedProfile.posScale > 1e-6) {
+    posScale = cachedProfile.posScale;
+  }
+  if (Number.isFinite(cachedProfile?.yawOffset)) {
+    yawOffset = cachedProfile.yawOffset;
   }
 
   return {
@@ -328,26 +502,77 @@ export function buildLiveRetargetPlan({
   };
 }
 
+export function exportLiveRetargetProfile(plan) {
+  if (!plan?.pairs?.length) return null;
+  return {
+    posScale: Number.isFinite(plan.posScale) ? Number(plan.posScale.toFixed(8)) : null,
+    yawOffset: Number.isFinite(plan.yawOffset) ? Number(plan.yawOffset.toFixed(8)) : null,
+    calibratedPairs: plan.calibratedPairs || 0,
+    pairs: plan.pairs.map((pair) => ({
+      target: pair.target?.name || "",
+      source: pair.source?.name || "",
+      canonical: pair.canonical || "",
+      hasRestCorrection: !!pair.hasRestCorrection,
+      useParentRelativeRestDelta: !!pair.useParentRelativeRestDelta,
+      useWorldRestTransfer: !!pair.useWorldRestTransfer,
+      restCorrectionQ: pair.hasRestCorrection ? serializeQuaternion(pair.restCorrectionQ) : null,
+      restWorldDeltaQ: pair.useParentRelativeRestDelta ? serializeQuaternion(pair.restWorldDeltaQ) : null,
+    })),
+  };
+}
+
 export function applyLiveRetargetPose({
   plan,
   modelRoot,
   liveAxisY = null,
   liveYawQ = null,
   liveQ = null,
+  liveQ2 = null,
+  liveQ3 = null,
   liveV = null,
 }) {
   if (!plan?.pairs?.length) return;
   const yaw = Number.isFinite(plan.yawOffset) ? plan.yawOffset : 0;
+  const invertRotationDelta = !!plan.invertRotationDelta;
   const yawQ = liveYawQ || new THREE.Quaternion();
   const deltaQ = liveQ || new THREE.Quaternion();
+  const parentWorldQ = liveQ2 || new THREE.Quaternion();
+  const targetWorldQ = liveQ3 || new THREE.Quaternion();
   const deltaV = liveV || new THREE.Vector3();
   if (Math.abs(yaw) > 1e-5) {
     yawQ.setFromAxisAngle(liveAxisY || new THREE.Vector3(0, 1, 0), yaw);
   }
   for (const pair of plan.pairs) {
-    deltaQ.copy(pair.sourceRestQ).invert().multiply(pair.source.quaternion);
-    if (pair.hasAxisCorrection) {
-      deltaQ.premultiply(pair.axisCorrectionQ).multiply(pair.axisCorrectionQInv);
+    if (!pair.isHips && pair.useParentRelativeRestDelta) {
+      pair.source.getWorldQuaternion(targetWorldQ);
+      targetWorldQ.multiply(pair.restWorldDeltaQ).normalize();
+      if (pair.target.parent) {
+        pair.target.parent.getWorldQuaternion(parentWorldQ);
+        pair.target.quaternion.copy(parentWorldQ.invert().multiply(targetWorldQ)).normalize();
+      } else {
+        pair.target.quaternion.copy(targetWorldQ).normalize();
+      }
+      pair.target.position.copy(pair.targetRestPos);
+      pair.target.updateMatrixWorld(true);
+      continue;
+    }
+    if (!pair.isHips && pair.useWorldRestTransfer && pair.target.parent) {
+      pair.source.getWorldQuaternion(deltaQ);
+      deltaQ.multiply(pair.sourceRestWorldQInv).normalize();
+      targetWorldQ.copy(deltaQ).multiply(pair.targetRestWorldQ).normalize();
+      pair.target.parent.getWorldQuaternion(parentWorldQ);
+      pair.target.quaternion.copy(parentWorldQ.invert().multiply(targetWorldQ)).normalize();
+      pair.target.position.copy(pair.targetRestPos);
+      pair.target.updateMatrixWorld(true);
+      continue;
+    }
+    if (invertRotationDelta) {
+      deltaQ.copy(pair.source.quaternion).invert().multiply(pair.sourceRestQ);
+    } else {
+      deltaQ.copy(pair.sourceRestQ).invert().multiply(pair.source.quaternion);
+    }
+    if (pair.hasRestCorrection) {
+      deltaQ.premultiply(pair.restCorrectionQ).multiply(pair.restCorrectionQInv);
     }
     if (pair.isHips && Math.abs(yaw) > 1e-5) {
       pair.target.quaternion.copy(pair.targetRestQ).multiply(yawQ).multiply(deltaQ).normalize();
@@ -363,6 +588,7 @@ export function applyLiveRetargetPose({
     } else {
       pair.target.position.copy(pair.targetRestPos);
     }
+    pair.target.updateMatrixWorld(true);
   }
   modelRoot?.updateMatrixWorld(true);
 }

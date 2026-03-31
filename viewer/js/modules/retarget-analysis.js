@@ -188,16 +188,21 @@ export function dumpRetargetAlignmentDiagnostics({
   if (windowRef) {
     windowRef.__vid2modelAlignment = report;
   }
-  console.log("[vid2model/diag] alignment-dump", { reason, ...report });
-  if (report.worstPosition.length) console.table(report.worstPosition);
-  if (report.worstRotation.length) console.table(report.worstRotation);
-  if (report.unmappedCanonical.length) {
-    console.log("[vid2model/diag] unmapped-canonical");
-    console.table(report.unmappedCanonical);
-  }
-  if (report.sourceMissing.length) {
-    console.log("[vid2model/diag] source-missing");
-    console.table(report.sourceMissing);
+
+  const diagMode = String(windowRef?.__vid2modelDiagMode || "minimal").trim().toLowerCase();
+  const shouldPrintVerbose = reason === "manual" || diagMode === "verbose";
+  if (shouldPrintVerbose) {
+    console.log("[vid2model/diag] alignment-dump", { reason, ...report });
+    if (report.worstPosition.length) console.table(report.worstPosition);
+    if (report.worstRotation.length) console.table(report.worstRotation);
+    if (report.unmappedCanonical.length) {
+      console.log("[vid2model/diag] unmapped-canonical");
+      console.table(report.unmappedCanonical);
+    }
+    if (report.sourceMissing.length) {
+      console.log("[vid2model/diag] source-missing");
+      console.table(report.sourceMissing);
+    }
   }
   return report;
 }

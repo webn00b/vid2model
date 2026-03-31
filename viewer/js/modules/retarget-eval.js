@@ -1,6 +1,23 @@
 import * as THREE from "three";
 import { parseTrackName } from "./bone-utils.js";
 
+function filterClipForTargetBones(clip, targetBones) {
+  if (!clip?.tracks?.length || !targetBones?.length) return null;
+  const targetNames = new Set(targetBones.map((bone) => bone.name));
+  const filteredTracks = [];
+  for (const track of clip.tracks) {
+    const parsed = parseTrackName(track.name);
+    if (!parsed) continue;
+    if (!targetNames.has(parsed.bone)) continue;
+    filteredTracks.push(track.clone());
+  }
+  if (!filteredTracks.length) return null;
+  if (filteredTracks.length === clip.tracks.length) return clip;
+  const filteredClip = new THREE.AnimationClip(clip.name, clip.duration, filteredTracks);
+  filteredClip.blendMode = clip.blendMode;
+  return filteredClip;
+}
+
 export function evaluateRootYawCandidates({
   candidates,
   sampleTime,
@@ -9,13 +26,15 @@ export function evaluateRootYawCandidates({
   modelRoot,
   modelMixers,
   modelSkinnedMesh,
+  targetBones = null,
   sourceResult,
   mixer,
   resetModelRootOrientation,
   applyModelRootYaw,
   collectAlignmentDiagnostics,
 }) {
-  if (!modelRoot || !modelMixers.length || !modelSkinnedMesh?.skeleton?.bones?.length || !sourceResult?.skeleton?.bones?.length) {
+  const evalTargetBones = targetBones?.length ? targetBones : (modelSkinnedMesh?.skeleton?.bones || []);
+  if (!modelRoot || !modelMixers.length || !evalTargetBones.length || !sourceResult?.skeleton?.bones?.length) {
     return { bestYaw: 0, rows: [] };
   }
   const sourceTime = mixer ? mixer.time : 0;
@@ -32,7 +51,7 @@ export function evaluateRootYawCandidates({
       }
       modelRoot.updateMatrixWorld(true);
       const alignment = collectAlignmentDiagnostics({
-        targetBones: modelSkinnedMesh.skeleton.bones,
+        targetBones: evalTargetBones,
         sourceBones: sourceResult.skeleton.bones,
         namesTargetToSource,
         sourceClip,
@@ -89,10 +108,13 @@ export function buildBindingsForAttempt({
       const skeletonId = mesh.skeleton?.uuid || mesh.uuid;
       if (seenSkeletonIds.has(skeletonId)) continue;
       seenSkeletonIds.add(skeletonId);
-      const resolvedTracks = resolvedTrackCountForTarget(clip, mesh.skeleton.bones);
+      const bindingClip = filterClipForTargetBones(clip, mesh.skeleton.bones);
+      const resolvedTracks = bindingClip
+        ? resolvedTrackCountForTarget(bindingClip, mesh.skeleton.bones)
+        : 0;
       if (resolvedTracks <= 0) continue;
       const mix = new THREE.AnimationMixer(mesh);
-      const action = mix.clipAction(clip);
+      const action = mix.clipAction(bindingClip);
       action.reset();
       action.setEffectiveWeight(1);
       action.setEffectiveTimeScale(1);
@@ -108,8 +130,15 @@ export function buildBindingsForAttempt({
   } else {
     const bindingRoot = modelRoot || modelSkinnedMesh;
     if (bindingRoot) {
+      const bindingClip = filterClipForTargetBones(
+        clip,
+        modelSkinnedMesh?.skeleton?.bones || []
+      );
+      if (!bindingClip) {
+        return { mixers, actions, activeBindings, useSkinnedBinding };
+      }
       const mix = new THREE.AnimationMixer(bindingRoot);
-      const action = mix.clipAction(clip);
+      const action = mix.clipAction(bindingClip);
       action.reset();
       action.setEffectiveWeight(1);
       action.setEffectiveTimeScale(1);
@@ -120,7 +149,7 @@ export function buildBindingsForAttempt({
         mesh: bindingRoot.name || "(model-root)",
         bones: modelSkinnedMesh?.skeleton?.bones?.length || 0,
         resolvedTracks: modelSkinnedMesh?.skeleton?.bones
-          ? resolvedTrackCountForTarget(clip, modelSkinnedMesh.skeleton.bones)
+          ? resolvedTrackCountForTarget(bindingClip, modelSkinnedMesh.skeleton.bones)
           : clip.tracks.length,
       });
     }
@@ -129,8 +158,9 @@ export function buildBindingsForAttempt({
   return { mixers, actions, activeBindings, useSkinnedBinding };
 }
 
-export function probeMotionForBindings({ bindings, clip, modelSkinnedMesh, modelRoot }) {
-  if (!bindings.mixers.length || !modelSkinnedMesh?.skeleton?.bones?.length) {
+export function probeMotionForBindings({ bindings, clip, modelSkinnedMesh, modelRoot, targetBones = null }) {
+  const evalTargetBones = targetBones?.length ? targetBones : (modelSkinnedMesh?.skeleton?.bones || []);
+  if (!bindings.mixers.length || !evalTargetBones.length) {
     return { sampleTime: 0, maxAngle: 0, maxPos: 0, score: 0 };
   }
 
@@ -140,9 +170,9 @@ export function probeMotionForBindings({ bindings, clip, modelSkinnedMesh, model
     if (parsed?.bone) trackedBoneNames.add(parsed.bone);
   }
 
-  let probeBones = modelSkinnedMesh.skeleton.bones.filter((b) => trackedBoneNames.has(b.name));
+  let probeBones = evalTargetBones.filter((b) => trackedBoneNames.has(b.name));
   if (!probeBones.length) {
-    probeBones = modelSkinnedMesh.skeleton.bones;
+    probeBones = evalTargetBones;
   }
   probeBones = probeBones.slice(0, 64);
 
@@ -190,13 +220,15 @@ export function computePoseMatchError({
   bindings,
   sampleTime,
   modelSkinnedMesh,
+  targetBones = null,
   sourceResult,
   mixer,
   modelRoot,
   buildCanonicalBoneMap,
   canonicalPoseSignature,
 }) {
-  if (!bindings?.mixers?.length || !modelSkinnedMesh?.skeleton?.bones?.length || !sourceResult?.skeleton?.bones?.length) {
+  const evalTargetBones = targetBones?.length ? targetBones : (modelSkinnedMesh?.skeleton?.bones || []);
+  if (!bindings?.mixers?.length || !evalTargetBones.length || !sourceResult?.skeleton?.bones?.length) {
     return Number.POSITIVE_INFINITY;
   }
   if (!(sampleTime > 0)) {
@@ -232,7 +264,7 @@ export function computePoseMatchError({
     modelRoot?.updateMatrixWorld(true);
 
     const sourceMap = buildCanonicalBoneMap(sourceResult.skeleton.bones);
-    const targetMap = buildCanonicalBoneMap(modelSkinnedMesh.skeleton.bones);
+    const targetMap = buildCanonicalBoneMap(evalTargetBones);
     const sourceSig = canonicalPoseSignature(sourceMap, keys);
     const targetSig = canonicalPoseSignature(targetMap, keys);
     if (!sourceSig || !targetSig) return Number.POSITIVE_INFINITY;

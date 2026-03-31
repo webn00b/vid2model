@@ -1,6 +1,12 @@
 from .cli import check_tools, main, parse_args
 from .math3d import euler_zxy_from_matrix, normalize, rotation_align
-from .pipeline import build_rest_offsets, bvh_hierarchy_lines, convert_video_to_bvh, frame_channels
+from .pipeline import (
+    build_pose_correction_profile,
+    build_rest_offsets,
+    bvh_hierarchy_lines,
+    convert_video_to_bvh,
+    frame_channels,
+)
 from .pose_model import MODEL_URLS, ensure_pose_model
 from .pose_points import LM, extract_pose_points
 from .skeleton import CHILDREN, JOINTS, MAP_TO_POINTS, JointDef
@@ -13,6 +19,7 @@ __all__ = [
     "LM",
     "MAP_TO_POINTS",
     "MODEL_URLS",
+    "build_pose_correction_profile",
     "build_rest_offsets",
     "check_tools",
     "bvh_hierarchy_lines",

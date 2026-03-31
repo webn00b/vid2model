@@ -7,6 +7,7 @@ from vid2model_lib import (
     LM,
     MAP_TO_POINTS,
     MODEL_URLS,
+    build_pose_correction_profile,
     JointDef,
     build_rest_offsets,
     bvh_hierarchy_lines,
