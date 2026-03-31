@@ -1,16 +1,686 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .math3d import euler_zxy_from_matrix, rotation_align, rotation_align_with_secondary
+from .math3d import euler_zxy_from_matrix, normalize, rotation_align, rotation_align_with_secondary
 from .pose_model import ensure_pose_model
 from .pose_points import extract_pose_points
 from .skeleton import CHILDREN, JOINTS, MAP_TO_POINTS
+
+
+@dataclass(frozen=True)
+class PoseCorrectionProfile:
+    mode: str = "manual"
+    model_path: str = ""
+    shoulder_tracking: bool = True
+    hip_camera: bool = False
+    auto_grounding: bool = True
+    use_arm_ik: bool = True
+    use_leg_ik: bool = True
+    body_bend_reduction_power: float = 0.5
+    upper_rotation_offset_deg: float = 0.0
+    arm_horizontal_offset_percent: float = 0.0
+    arm_vertical_offset_percent: float = 0.0
+    hip_depth_scale_percent: float = 100.0
+    hip_y_position_offset_percent: float = 0.0
+    hip_z_position_offset_percent: float = 0.0
+    body_collider_mode: int = 2
+    body_collider_head_size_percent: float = 100.0
+    body_collider_chest_size_percent: float = 100.0
+    body_collider_waist_size_percent: float = 100.0
+    body_collider_hip_size_percent: float = 100.0
+    body_collider_head_reaction_type: str = "z_push"
+
+
+DEFAULT_POSE_CORRECTIONS = PoseCorrectionProfile()
+
+
+def build_pose_correction_profile(data: Optional[Dict[str, Any]] = None) -> PoseCorrectionProfile:
+    if not data:
+        return DEFAULT_POSE_CORRECTIONS
+
+    def as_bool(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def as_float(value: Any, default: float) -> float:
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def as_int(value: Any, default: int) -> int:
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def as_str(value: Any, default: str) -> str:
+        if value is None:
+            return default
+        return str(value)
+
+    return PoseCorrectionProfile(
+        mode=str(data.get("mode", DEFAULT_POSE_CORRECTIONS.mode)).strip().lower() or DEFAULT_POSE_CORRECTIONS.mode,
+        model_path=as_str(data.get("model_path"), DEFAULT_POSE_CORRECTIONS.model_path),
+        shoulder_tracking=as_bool(data.get("shoulder_tracking"), DEFAULT_POSE_CORRECTIONS.shoulder_tracking),
+        hip_camera=as_bool(data.get("hip_camera"), DEFAULT_POSE_CORRECTIONS.hip_camera),
+        auto_grounding=as_bool(data.get("auto_grounding"), DEFAULT_POSE_CORRECTIONS.auto_grounding),
+        use_arm_ik=as_bool(data.get("use_arm_ik"), DEFAULT_POSE_CORRECTIONS.use_arm_ik),
+        use_leg_ik=as_bool(data.get("use_leg_ik"), DEFAULT_POSE_CORRECTIONS.use_leg_ik),
+        body_bend_reduction_power=as_float(
+            data.get("body_bend_reduction_power"), DEFAULT_POSE_CORRECTIONS.body_bend_reduction_power
+        ),
+        upper_rotation_offset_deg=as_float(
+            data.get("upper_rotation_offset_deg", data.get("upper_rotation_offset")),
+            DEFAULT_POSE_CORRECTIONS.upper_rotation_offset_deg,
+        ),
+        arm_horizontal_offset_percent=as_float(
+            data.get("arm_horizontal_offset_percent"), DEFAULT_POSE_CORRECTIONS.arm_horizontal_offset_percent
+        ),
+        arm_vertical_offset_percent=as_float(
+            data.get("arm_vertical_offset_percent"), DEFAULT_POSE_CORRECTIONS.arm_vertical_offset_percent
+        ),
+        hip_depth_scale_percent=as_float(
+            data.get("hip_depth_scale_percent"), DEFAULT_POSE_CORRECTIONS.hip_depth_scale_percent
+        ),
+        hip_y_position_offset_percent=as_float(
+            data.get("hip_y_position_offset_percent"), DEFAULT_POSE_CORRECTIONS.hip_y_position_offset_percent
+        ),
+        hip_z_position_offset_percent=as_float(
+            data.get("hip_z_position_offset_percent"), DEFAULT_POSE_CORRECTIONS.hip_z_position_offset_percent
+        ),
+        body_collider_mode=as_int(data.get("body_collider_mode"), DEFAULT_POSE_CORRECTIONS.body_collider_mode),
+        body_collider_head_size_percent=as_float(
+            data.get("body_collider_head_size_percent"), DEFAULT_POSE_CORRECTIONS.body_collider_head_size_percent
+        ),
+        body_collider_chest_size_percent=as_float(
+            data.get("body_collider_chest_size_percent"), DEFAULT_POSE_CORRECTIONS.body_collider_chest_size_percent
+        ),
+        body_collider_waist_size_percent=as_float(
+            data.get("body_collider_waist_size_percent"), DEFAULT_POSE_CORRECTIONS.body_collider_waist_size_percent
+        ),
+        body_collider_hip_size_percent=as_float(
+            data.get("body_collider_hip_size_percent"), DEFAULT_POSE_CORRECTIONS.body_collider_hip_size_percent
+        ),
+        body_collider_head_reaction_type=as_str(
+            data.get("body_collider_head_reaction_type"),
+            DEFAULT_POSE_CORRECTIONS.body_collider_head_reaction_type,
+        ),
+    )
+
+
+AUTO_POSE_PRESETS: Dict[str, Dict[str, Any]] = {
+    "default": {},
+    "mirrored": {
+        "shoulder_tracking": True,
+        "hip_camera": False,
+        "auto_grounding": True,
+        "body_bend_reduction_power": 0.35,
+        "body_collider_mode": 2,
+        "body_collider_head_size_percent": 105,
+        "body_collider_chest_size_percent": 100,
+        "body_collider_waist_size_percent": 98,
+        "body_collider_hip_size_percent": 98,
+    },
+    "low_camera": {
+        "shoulder_tracking": False,
+        "hip_camera": True,
+        "auto_grounding": True,
+        "body_bend_reduction_power": 0.60,
+        "upper_rotation_offset_deg": 0.0,
+        "arm_vertical_offset_percent": 8.0,
+        "hip_depth_scale_percent": 115.0,
+        "body_collider_mode": 1,
+        "body_collider_head_size_percent": 110,
+        "body_collider_chest_size_percent": 108,
+        "body_collider_waist_size_percent": 102,
+        "body_collider_hip_size_percent": 96,
+    },
+    "wide_arms": {
+        "shoulder_tracking": True,
+        "hip_camera": False,
+        "auto_grounding": True,
+        "use_arm_ik": True,
+        "body_bend_reduction_power": 0.42,
+        "arm_horizontal_offset_percent": 18.0,
+        "arm_vertical_offset_percent": 4.0,
+        "body_collider_mode": 2,
+        "body_collider_head_size_percent": 100,
+        "body_collider_chest_size_percent": 112,
+        "body_collider_waist_size_percent": 100,
+        "body_collider_hip_size_percent": 100,
+    },
+    "crouched": {
+        "shoulder_tracking": True,
+        "hip_camera": True,
+        "auto_grounding": True,
+        "use_leg_ik": True,
+        "body_bend_reduction_power": 0.22,
+        "hip_y_position_offset_percent": -6.0,
+        "hip_depth_scale_percent": 108.0,
+        "body_collider_mode": 1,
+        "body_collider_head_size_percent": 100,
+        "body_collider_chest_size_percent": 100,
+        "body_collider_waist_size_percent": 108,
+        "body_collider_hip_size_percent": 112,
+    },
+}
+
+
+def _finite_or_zero(v: float) -> float:
+    return float(v) if np.isfinite(v) else 0.0
+
+
+def _sample_feature_summary(sample: Dict[str, np.ndarray]) -> Dict[str, float]:
+    mid_hip = np.array(sample.get("mid_hip", np.zeros(3)), dtype=np.float64)
+    chest = np.array(sample.get("chest", mid_hip), dtype=np.float64)
+    head = np.array(sample.get("head", chest), dtype=np.float64)
+    left_shoulder = np.array(sample.get("left_shoulder", chest), dtype=np.float64)
+    right_shoulder = np.array(sample.get("right_shoulder", chest), dtype=np.float64)
+    left_hip = np.array(sample.get("left_hip", mid_hip), dtype=np.float64)
+    right_hip = np.array(sample.get("right_hip", mid_hip), dtype=np.float64)
+    left_wrist = np.array(sample.get("left_wrist", chest), dtype=np.float64)
+    right_wrist = np.array(sample.get("right_wrist", chest), dtype=np.float64)
+    left_ankle = np.array(sample.get("left_ankle", mid_hip), dtype=np.float64)
+    right_ankle = np.array(sample.get("right_ankle", mid_hip), dtype=np.float64)
+    left_knee = np.array(sample.get("left_knee", mid_hip), dtype=np.float64)
+    right_knee = np.array(sample.get("right_knee", mid_hip), dtype=np.float64)
+
+    shoulder_width = max(float(np.linalg.norm(right_shoulder - left_shoulder)), 1e-6)
+    hip_width = max(float(np.linalg.norm(right_hip - left_hip)), 1e-6)
+    torso_height = max(float(np.linalg.norm(chest - mid_hip)), 1e-6)
+    head_height = max(float(np.linalg.norm(head - chest)), 1e-6)
+    arm_span = float(np.linalg.norm(right_wrist - left_wrist))
+    leg_span = float(np.linalg.norm(right_ankle - left_ankle))
+    torso_depth = abs(_finite_or_zero(chest[2] - mid_hip[2]))
+    head_depth = abs(_finite_or_zero(head[2] - chest[2]))
+    shoulder_bias = _finite_or_zero(left_shoulder[0] - right_shoulder[0])
+    hip_bias = _finite_or_zero(left_hip[0] - right_hip[0])
+    wrist_bias = _finite_or_zero(left_wrist[0] - right_wrist[0])
+    ankle_bias = _finite_or_zero(left_ankle[0] - right_ankle[0])
+    shoulder_depth_bias = _finite_or_zero(left_shoulder[2] - right_shoulder[2])
+    hip_depth_bias = _finite_or_zero(left_hip[2] - right_hip[2])
+    wrist_height = ((left_wrist[1] + right_wrist[1]) * 0.5) - chest[1]
+    ankle_height = ((left_ankle[1] + right_ankle[1]) * 0.5) - mid_hip[1]
+    knee_height = ((left_knee[1] + right_knee[1]) * 0.5) - mid_hip[1]
+    hand_depth = abs(_finite_or_zero(left_wrist[2] - right_wrist[2]))
+    arm_width_ratio = arm_span / shoulder_width
+    leg_width_ratio = leg_span / hip_width
+    torso_depth_ratio = torso_depth / shoulder_width
+    head_depth_ratio = head_depth / shoulder_width
+    hand_drop_ratio = (chest[1] - wrist_height) / torso_height
+    crouch_ratio = (mid_hip[1] - ankle_height) / torso_height
+    knee_drop_ratio = (mid_hip[1] - knee_height) / torso_height
+
+    return {
+        "shoulder_width": shoulder_width,
+        "hip_width": hip_width,
+        "torso_height": torso_height,
+        "head_height": head_height,
+        "arm_span": arm_span,
+        "leg_span": leg_span,
+        "torso_depth": torso_depth,
+        "head_depth": head_depth,
+        "hand_depth": hand_depth,
+        "arm_width_ratio": arm_width_ratio,
+        "leg_width_ratio": leg_width_ratio,
+        "torso_depth_ratio": torso_depth_ratio,
+        "head_depth_ratio": head_depth_ratio,
+        "hand_drop_ratio": hand_drop_ratio,
+        "crouch_ratio": crouch_ratio,
+        "knee_drop_ratio": knee_drop_ratio,
+        "shoulder_bias": shoulder_bias,
+        "hip_bias": hip_bias,
+        "wrist_bias": wrist_bias,
+        "ankle_bias": ankle_bias,
+        "shoulder_depth_bias": shoulder_depth_bias,
+        "hip_depth_bias": hip_depth_bias,
+        "arm_span_to_torso": arm_span / torso_height,
+        "leg_span_to_torso": leg_span / torso_height,
+        "head_to_torso": head_height / torso_height,
+    }
+
+
+def _auto_feature_vector(samples: List[Dict[str, np.ndarray]]) -> Tuple[np.ndarray, Dict[str, float]]:
+    summary = _sample_feature_summary(_median_pose_sample(samples))
+    vector = np.array(
+            [
+                summary["shoulder_width"],
+                summary["hip_width"],
+                summary["torso_height"],
+                summary["head_height"],
+            summary["arm_span"],
+            summary["leg_span"],
+            summary["torso_depth"],
+            summary["head_depth"],
+            summary["hand_depth"],
+            summary["arm_width_ratio"],
+            summary["leg_width_ratio"],
+            summary["torso_depth_ratio"],
+            summary["head_depth_ratio"],
+                summary["hand_drop_ratio"],
+                summary["crouch_ratio"],
+                summary["knee_drop_ratio"],
+                summary["shoulder_bias"],
+                summary["hip_bias"],
+                summary["wrist_bias"],
+                summary["ankle_bias"],
+                summary["shoulder_depth_bias"],
+                summary["hip_depth_bias"],
+                summary["arm_span_to_torso"],
+                summary["leg_span_to_torso"],
+                summary["head_to_torso"],
+            ],
+        dtype=np.float64,
+    )
+    return vector, summary
+
+
+def _load_auto_classifier(model_path: str) -> Optional[Dict[str, Any]]:
+    path = Path(model_path).expanduser()
+    if not path.exists():
+        return None
+    try:
+        if path.suffix.lower() == ".npz":
+            data = np.load(path, allow_pickle=True)
+            payload = {k: data[k] for k in data.files}
+            return payload
+        if path.suffix.lower() == ".json":
+            import json
+
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[vid2model] auto model load failed: {exc}", file=sys.stderr)
+        return None
+    return None
+
+
+def _predict_auto_label(features: np.ndarray, summary: Dict[str, float], model_path: str = "") -> Tuple[str, Dict[str, float]]:
+    model = _load_auto_classifier(model_path) if model_path else None
+    if model:
+        try:
+            x = np.asarray(features, dtype=np.float64).reshape(-1)
+            feature_mean = model.get("feature_mean")
+            feature_scale = model.get("feature_scale")
+            if feature_mean is not None:
+                x = x - np.asarray(feature_mean, dtype=np.float64).reshape(-1)
+            if feature_scale is not None:
+                scale = np.asarray(feature_scale, dtype=np.float64).reshape(-1)
+                scale = np.where(np.abs(scale) < 1e-8, 1.0, scale)
+                x = x / scale
+            if {"W1", "b1", "W2", "b2"} <= model.keys():
+                w1 = np.asarray(model["W1"], dtype=np.float64)
+                b1 = np.asarray(model["b1"], dtype=np.float64)
+                w2 = np.asarray(model["W2"], dtype=np.float64)
+                b2 = np.asarray(model["b2"], dtype=np.float64)
+                h = np.tanh(w1 @ x + b1)
+                logits = w2 @ h + b2
+            elif {"W", "b"} <= model.keys():
+                logits = np.asarray(model["W"], dtype=np.float64) @ x + np.asarray(model["b"], dtype=np.float64)
+            else:
+                raise ValueError("unsupported auto model format")
+
+            classes = [str(v) for v in np.asarray(model.get("classes", list(AUTO_POSE_PRESETS.keys())), dtype=object).tolist()]
+            if len(classes) != len(logits):
+                raise ValueError("class count mismatch")
+            idx = int(np.argmax(logits))
+            label = classes[idx]
+            score = float(np.max(logits))
+            return label if label in AUTO_POSE_PRESETS else "default", {"model_score": score}
+        except Exception as exc:
+            print(f"[vid2model] auto model inference failed, using heuristic: {exc}", file=sys.stderr)
+
+    scores = {
+        "default": 0.0,
+        "mirrored": 0.0,
+        "low_camera": 0.0,
+        "wide_arms": 0.0,
+        "crouched": 0.0,
+    }
+    if summary["hand_drop_ratio"] < 0.12:
+        scores["wide_arms"] += 2.0
+    if summary["arm_width_ratio"] > 1.25:
+        scores["wide_arms"] += 3.0
+    if summary["crouch_ratio"] > 0.55 or summary["knee_drop_ratio"] > 0.35:
+        scores["crouched"] += 3.0
+    if summary["torso_depth_ratio"] > 0.10 or summary["head_depth_ratio"] > 0.08:
+        scores["low_camera"] += 2.5
+    if summary["arm_span_to_torso"] > 1.8:
+        scores["wide_arms"] += 1.0
+    if summary["head_to_torso"] > 0.42:
+        scores["low_camera"] += 0.5
+    label = max(scores.items(), key=lambda item: item[1])[0]
+    if scores[label] <= 0.5:
+        label = "default"
+    return label, {"heuristic_score": float(scores[label])}
+
+
+def resolve_auto_pose_corrections(
+    samples: List[Dict[str, np.ndarray]],
+    base: PoseCorrectionProfile,
+) -> Tuple[PoseCorrectionProfile, Dict[str, Any]]:
+    features, summary = _auto_feature_vector(samples)
+    label, meta = _predict_auto_label(features, summary, base.model_path)
+    preset = AUTO_POSE_PRESETS.get(label, AUTO_POSE_PRESETS["default"])
+    resolved = replace(base, mode="resolved")
+    for key, value in preset.items():
+        if hasattr(resolved, key):
+            resolved = replace(resolved, **{key: value})
+    meta.update(
+        {
+            "label": label,
+            "features": {k: round(float(v), 6) for k, v in summary.items()},
+        }
+    )
+    return resolved, meta
+
+
+def _swap_lr_name(name: str) -> str:
+    if name.startswith("left_"):
+        return "right_" + name[5:]
+    if name.startswith("right_"):
+        return "left_" + name[6:]
+    return name
+
+
+def _mirror_pose_points(pts: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    mirrored: Dict[str, np.ndarray] = {}
+    for key, value in pts.items():
+        mirrored[_swap_lr_name(key)] = np.array([-value[0], value[1], value[2]], dtype=np.float64)
+    return mirrored
+
+
+def _swap_pose_sides(pts: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    swapped: Dict[str, np.ndarray] = {}
+    for key, value in pts.items():
+        swapped[_swap_lr_name(key)] = np.array(value, dtype=np.float64)
+    return swapped
+
+
+def _looks_mirrored(sample: Dict[str, np.ndarray]) -> bool:
+    votes = []
+    for left_key, right_key in [
+        ("left_shoulder", "right_shoulder"),
+        ("left_hip", "right_hip"),
+        ("left_wrist", "right_wrist"),
+    ]:
+        left = sample.get(left_key)
+        right = sample.get(right_key)
+        if left is None or right is None:
+            continue
+        if not np.isfinite(left[0]) or not np.isfinite(right[0]):
+            continue
+        votes.append(float(left[0]) > float(right[0]))
+
+    if not votes:
+        return False
+    return sum(votes) >= (len(votes) / 2.0)
+
+
+def _looks_side_swapped(sample: Dict[str, np.ndarray]) -> bool:
+    votes = []
+    for left_key, right_key in [
+        ("left_shoulder", "right_shoulder"),
+        ("left_hip", "right_hip"),
+        ("left_elbow", "right_elbow"),
+        ("left_wrist", "right_wrist"),
+        ("left_knee", "right_knee"),
+        ("left_ankle", "right_ankle"),
+    ]:
+        left = sample.get(left_key)
+        right = sample.get(right_key)
+        if left is None or right is None:
+            continue
+        if not np.isfinite(left[0]) or not np.isfinite(right[0]):
+            continue
+        votes.append(float(left[0]) > float(right[0]))
+    if not votes:
+        return False
+    return sum(votes) >= (len(votes) / 2.0)
+
+
+def _pose_distance(
+    prev_pts: Dict[str, np.ndarray],
+    cur_pts: Dict[str, np.ndarray],
+) -> float:
+    total = 0.0
+    count = 0
+    for key in [
+        "left_shoulder",
+        "right_shoulder",
+        "left_elbow",
+        "right_elbow",
+        "left_wrist",
+        "right_wrist",
+        "left_hip",
+        "right_hip",
+        "left_knee",
+        "right_knee",
+        "left_ankle",
+        "right_ankle",
+    ]:
+        prev = prev_pts.get(key)
+        cur = cur_pts.get(key)
+        if prev is None or cur is None:
+            continue
+        total += float(np.linalg.norm(cur - prev))
+        count += 1
+    return total / max(count, 1)
+
+
+def _fix_temporal_side_swaps(
+    frames_pts: List[Dict[str, np.ndarray]],
+) -> Tuple[List[Dict[str, np.ndarray]], int]:
+    if not frames_pts:
+        return [], 0
+
+    fixed: List[Dict[str, np.ndarray]] = []
+    swaps = 0
+    prev = None
+    for pts in frames_pts:
+        current = {key: np.array(value, dtype=np.float64) for key, value in pts.items()}
+        swapped = _swap_pose_sides(current)
+        choose_swap = _looks_side_swapped(current)
+        if prev is not None:
+            keep_cost = _pose_distance(prev, current)
+            swap_cost = _pose_distance(prev, swapped)
+            if swap_cost + 1e-6 < keep_cost * 0.9:
+                choose_swap = True
+        if choose_swap:
+            current = swapped
+            swaps += 1
+        fixed.append(current)
+        prev = current
+    return fixed, swaps
+
+
+def _smooth_pose_frames(
+    frames_pts: List[Dict[str, np.ndarray]],
+    alpha: float = 0.35,
+) -> List[Dict[str, np.ndarray]]:
+    if len(frames_pts) <= 2:
+        return [{key: np.array(value, dtype=np.float64) for key, value in pts.items()} for pts in frames_pts]
+
+    alpha = float(np.clip(alpha, 0.05, 0.95))
+    keys = list(frames_pts[0].keys())
+    forward: List[Dict[str, np.ndarray]] = []
+    prev = {key: np.array(value, dtype=np.float64) for key, value in frames_pts[0].items()}
+    forward.append(prev)
+    for pts in frames_pts[1:]:
+        current = {}
+        for key in keys:
+            current[key] = prev[key] * (1.0 - alpha) + np.array(pts[key], dtype=np.float64) * alpha
+        forward.append(current)
+        prev = current
+
+    backward: List[Dict[str, np.ndarray]] = [None] * len(frames_pts)  # type: ignore[assignment]
+    prev = {key: np.array(value, dtype=np.float64) for key, value in frames_pts[-1].items()}
+    backward[-1] = prev
+    for idx in range(len(frames_pts) - 2, -1, -1):
+        pts = frames_pts[idx]
+        current = {}
+        for key in keys:
+            current[key] = prev[key] * (1.0 - alpha) + np.array(pts[key], dtype=np.float64) * alpha
+        backward[idx] = current
+        prev = current
+
+    smoothed: List[Dict[str, np.ndarray]] = []
+    for idx in range(len(frames_pts)):
+        combined = {}
+        for key in keys:
+            combined[key] = (forward[idx][key] + backward[idx][key]) * 0.5
+        smoothed.append(combined)
+    return smoothed
+
+
+def _build_target_segment_lengths(samples: List[Dict[str, np.ndarray]]) -> Dict[str, float]:
+    lengths: Dict[str, float] = {}
+    if not samples:
+        return lengths
+    for joint in JOINTS:
+        if joint.parent is None:
+            continue
+        parent_point = MAP_TO_POINTS[joint.parent][0]
+        child_point = MAP_TO_POINTS[joint.name][0]
+        segment_lengths = []
+        for sample in samples:
+            parent = sample.get(parent_point)
+            child = sample.get(child_point)
+            if parent is None or child is None:
+                continue
+            length = float(np.linalg.norm(child - parent))
+            if np.isfinite(length) and length > 1e-6:
+                segment_lengths.append(length)
+        if segment_lengths:
+            lengths[joint.name] = float(np.median(segment_lengths))
+    return lengths
+
+
+def _apply_segment_length_constraints(
+    pts: Dict[str, np.ndarray],
+    target_lengths: Dict[str, float],
+) -> Dict[str, np.ndarray]:
+    out: Dict[str, np.ndarray] = {key: np.array(value, dtype=np.float64) for key, value in pts.items()}
+    for joint in JOINTS:
+        if joint.parent is None:
+            continue
+        target_length = target_lengths.get(joint.name)
+        if target_length is None or target_length <= 1e-6:
+            continue
+        parent_point = MAP_TO_POINTS[joint.parent][0]
+        child_point = MAP_TO_POINTS[joint.name][0]
+        parent = out.get(parent_point)
+        child = out.get(child_point)
+        if parent is None or child is None:
+            continue
+        direction = child - parent
+        length = float(np.linalg.norm(direction))
+        if not np.isfinite(length) or length <= 1e-8:
+            continue
+        out[child_point] = parent + (direction / length) * target_length
+    return out
+
+
+def cleanup_pose_frames(
+    frames_pts: List[Dict[str, np.ndarray]],
+    anchor_samples: List[Dict[str, np.ndarray]],
+) -> Tuple[List[Dict[str, np.ndarray]], Dict[str, float]]:
+    if not frames_pts:
+        return frames_pts, {"side_swaps": 0.0, "smooth_alpha": 0.0, "length_constraints": 0.0}
+
+    # Keep source cleanup conservative by default: temporal smoothing helps
+    # jitter immediately, while aggressive side swapping / segment locking can
+    # invert the whole skeleton on difficult clips.
+    smoothed = _smooth_pose_frames(frames_pts, alpha=0.35)
+    return smoothed, {
+        "side_swaps": 0.0,
+        "smooth_alpha": 0.35,
+        "length_constraints": 0.0,
+    }
+
+
+def _wrap_angle_deg(angle: float) -> float:
+    wrapped = (float(angle) + 180.0) % 360.0 - 180.0
+    if wrapped == -180.0:
+        return 180.0
+    return wrapped
+
+
+def normalize_motion_root_yaw(
+    motion_values: List[List[float]],
+) -> Tuple[List[List[float]], Dict[str, float]]:
+    if not motion_values:
+        return motion_values, {"applied": 0.0, "offset_deg": 0.0, "near0": 0.0, "near180": 0.0}
+
+    yaw_values = [float(frame[5]) for frame in motion_values if len(frame) > 5 and np.isfinite(frame[5])]
+    if not yaw_values:
+        return motion_values, {"applied": 0.0, "offset_deg": 0.0, "near0": 0.0, "near180": 0.0}
+
+    near0 = 0
+    near180 = 0
+    for yaw in yaw_values:
+        wrapped = _wrap_angle_deg(yaw)
+        if abs(wrapped) < 45.0:
+            near0 += 1
+        elif abs(abs(wrapped) - 180.0) < 45.0:
+            near180 += 1
+
+    if near180 <= near0 or near180 < max(8, int(len(yaw_values) * 0.35)):
+        return motion_values, {
+            "applied": 0.0,
+            "offset_deg": 0.0,
+            "near0": float(near0),
+            "near180": float(near180),
+        }
+
+    normalized: List[List[float]] = []
+    for frame in motion_values:
+        updated = list(frame)
+        if len(updated) > 5 and np.isfinite(updated[5]):
+            updated[5] = _wrap_angle_deg(updated[5] - 180.0)
+        normalized.append(updated)
+    return normalized, {
+        "applied": 1.0,
+        "offset_deg": 180.0,
+        "near0": float(near0),
+        "near180": float(near180),
+    }
+
+
+def apply_manual_root_yaw_offset(
+    motion_values: List[List[float]],
+    offset_deg: float,
+) -> List[List[float]]:
+    if not motion_values or not np.isfinite(offset_deg) or abs(float(offset_deg)) < 1e-6:
+        return motion_values
+    adjusted: List[List[float]] = []
+    for frame in motion_values:
+        updated = list(frame)
+        if len(updated) > 5 and np.isfinite(updated[5]):
+            updated[5] = _wrap_angle_deg(updated[5] + float(offset_deg))
+        adjusted.append(updated)
+    return adjusted
 
 
 def build_rest_offsets(samples: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
@@ -32,11 +702,459 @@ def build_rest_offsets(samples: List[Dict[str, np.ndarray]]) -> Dict[str, np.nda
         parent_point = median_points[MAP_TO_POINTS[joint.parent][0]]
         child_point = median_points[MAP_TO_POINTS[joint.name][0]]
         offset = child_point - parent_point
-        if np.linalg.norm(offset) < 1e-6:
-            offset = np.array([0.0, 5.0, 0.0], dtype=np.float64)
-        rest[joint.name] = offset
+        length = float(np.linalg.norm(offset))
+        if length < 1e-6:
+            length = 5.0
+
+        if joint.name in {"spine", "chest", "upperChest", "neck", "head"}:
+            direction = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        elif joint.name == "leftShoulder":
+            direction = np.array([-1.0, 0.0, 0.0], dtype=np.float64)
+        elif joint.name == "rightShoulder":
+            direction = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        elif joint.name in {"leftUpperArm", "leftLowerArm"}:
+            direction = np.array([-1.0, 0.0, 0.0], dtype=np.float64)
+        elif joint.name in {"rightUpperArm", "rightLowerArm"}:
+            direction = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        elif joint.name in {"leftLowerLeg", "leftFoot"}:
+            direction = np.array([0.0, -1.0, 0.0], dtype=np.float64)
+        elif joint.name in {"rightLowerLeg", "rightFoot"}:
+            direction = np.array([0.0, -1.0, 0.0], dtype=np.float64)
+        elif joint.name in {"leftToes", "rightToes"}:
+            direction = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        else:
+            direction = offset
+
+        direction_norm = np.linalg.norm(direction)
+        if direction_norm < 1e-6:
+            direction = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            direction_norm = 1.0
+        rest[joint.name] = (direction / direction_norm) * length
 
     return rest
+
+
+def _median_pose_sample(samples: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
+    if not samples:
+        raise RuntimeError("No valid pose frames detected in video.")
+
+    sample_keys = list(samples[0].keys())
+    median_sample: Dict[str, np.ndarray] = {}
+    for key in sample_keys:
+        stacked = np.stack([sample[key] for sample in samples], axis=0)
+        median_sample[key] = np.median(stacked, axis=0)
+    return median_sample
+
+
+def _build_reference_basis(
+    sample: Dict[str, np.ndarray],
+    corrections: Optional[PoseCorrectionProfile] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    origin = np.array(sample["mid_hip"], dtype=np.float64)
+    left_shoulder = np.array(sample["left_shoulder"], dtype=np.float64)
+    right_shoulder = np.array(sample["right_shoulder"], dtype=np.float64)
+    left_hip = np.array(sample["left_hip"], dtype=np.float64)
+    right_hip = np.array(sample["right_hip"], dtype=np.float64)
+    chest = np.array(sample["chest"], dtype=np.float64)
+
+    use_shoulders = True if corrections is None else corrections.shoulder_tracking
+    x_axis = normalize(right_shoulder - left_shoulder) if use_shoulders else np.array([0.0, 0.0, 0.0], dtype=np.float64)
+    if np.linalg.norm(x_axis) < 1e-8:
+        x_axis = normalize(right_hip - left_hip)
+    if np.linalg.norm(x_axis) < 1e-8 and use_shoulders:
+        x_axis = normalize(right_shoulder - left_shoulder)
+    if np.linalg.norm(x_axis) < 1e-8:
+        return np.eye(3), origin
+
+    up_hint = chest - origin
+    if np.linalg.norm(up_hint) < 1e-8:
+        up_hint = ((left_shoulder + right_shoulder) * 0.5) - origin
+    y_axis = normalize(up_hint)
+    if np.linalg.norm(y_axis) < 1e-8:
+        return np.eye(3), origin
+
+    z_axis = np.cross(x_axis, y_axis)
+    if np.linalg.norm(z_axis) < 1e-8:
+        return np.eye(3), origin
+    z_axis = normalize(z_axis)
+
+    nose = sample.get("nose")
+    if nose is not None:
+        nose_vec = np.array(nose, dtype=np.float64) - origin
+        if float(np.dot(nose_vec, z_axis)) < 0.0:
+            z_axis = -z_axis
+
+    y_axis = np.cross(z_axis, x_axis)
+    if np.linalg.norm(y_axis) < 1e-8:
+        return np.eye(3), origin
+    y_axis = normalize(y_axis)
+    # Keep the canonical "up" axis consistent with the observed torso
+    # direction. Without this safeguard, some clips can rebuild a valid
+    # right-handed basis whose Y axis points downward, flipping the whole
+    # skeleton upside down.
+    if float(np.dot(y_axis, up_hint)) < 0.0:
+        y_axis = -y_axis
+        z_axis = -z_axis
+
+    basis = np.column_stack((x_axis, y_axis, z_axis))
+    return basis, origin
+
+
+def _rotate_points_about_y(
+    pts: Dict[str, np.ndarray],
+    keys: List[str],
+    angle_deg: float,
+    pivot: np.ndarray,
+) -> None:
+    if not keys or abs(float(angle_deg)) < 1e-8:
+        return
+    angle_rad = np.radians(float(angle_deg))
+    cos_y = float(np.cos(angle_rad))
+    sin_y = float(np.sin(angle_rad))
+    rot = np.array(
+        [
+            [cos_y, 0.0, sin_y],
+            [0.0, 1.0, 0.0],
+            [-sin_y, 0.0, cos_y],
+        ],
+        dtype=np.float64,
+    )
+    for key in keys:
+        value = pts.get(key)
+        if value is None:
+            continue
+        pts[key] = pivot + rot @ (value - pivot)
+
+
+def _apply_pose_corrections(
+    pts: Dict[str, np.ndarray],
+    corrections: PoseCorrectionProfile,
+) -> Dict[str, np.ndarray]:
+    out: Dict[str, np.ndarray] = {key: np.array(value, dtype=np.float64) for key, value in pts.items()}
+    if not out:
+        return out
+
+    mid_hip = out.get("mid_hip")
+    if mid_hip is None:
+        mid_hip = (out["left_hip"] + out["right_hip"]) * 0.5
+        out["mid_hip"] = mid_hip
+
+    shoulder_span = float(np.linalg.norm(out["left_shoulder"] - out["right_shoulder"]))
+    if shoulder_span < 1e-6:
+        shoulder_span = float(np.linalg.norm(out["left_hip"] - out["right_hip"]))
+    if shoulder_span < 1e-6:
+        shoulder_span = 1.0
+
+    hip_span = float(np.linalg.norm(out["left_hip"] - out["right_hip"]))
+    if hip_span < 1e-6:
+        hip_span = shoulder_span
+
+    if corrections.auto_grounding:
+        ground_keys = [
+            "left_ankle",
+            "right_ankle",
+            "left_heel",
+            "right_heel",
+            "left_toes",
+            "right_toes",
+        ]
+        ground_values = [out[key][1] for key in ground_keys if key in out and np.isfinite(out[key][1])]
+        if ground_values:
+            ground_y = float(min(ground_values))
+            if np.isfinite(ground_y):
+                offset = np.array([0.0, -ground_y, 0.0], dtype=np.float64)
+                for key in out:
+                    out[key] = out[key] + offset
+                mid_hip = out["mid_hip"]
+
+    if corrections.hip_y_position_offset_percent:
+        dy = shoulder_span * 0.06 * (float(corrections.hip_y_position_offset_percent) / 100.0)
+        for key in out:
+            out[key][1] += dy
+        mid_hip = out["mid_hip"]
+
+    if corrections.hip_z_position_offset_percent:
+        dz = shoulder_span * 0.06 * (float(corrections.hip_z_position_offset_percent) / 100.0)
+        for key in out:
+            out[key][2] += dz
+        mid_hip = out["mid_hip"]
+
+    if corrections.hip_depth_scale_percent and abs(float(corrections.hip_depth_scale_percent) - 100.0) > 1e-6:
+        scale_z = float(corrections.hip_depth_scale_percent) / 100.0
+        lower_body_keys = {
+            "mid_hip",
+            "hips",
+            "left_hip",
+            "right_hip",
+            "left_knee",
+            "right_knee",
+            "left_ankle",
+            "right_ankle",
+            "left_heel",
+            "right_heel",
+            "left_toes",
+            "right_toes",
+        }
+        for key in lower_body_keys:
+            if key not in out:
+                continue
+            vec = out[key] - mid_hip
+            vec[2] *= scale_z
+            out[key] = mid_hip + vec
+
+    torso_keys = ["spine", "chest", "upper_chest", "neck", "head", "left_shoulder_clavicle", "right_shoulder_clavicle"]
+    if corrections.body_bend_reduction_power:
+        bend = float(np.clip(corrections.body_bend_reduction_power, 0.0, 1.0))
+        if bend > 1e-6:
+            for key in torso_keys:
+                if key not in out:
+                    continue
+                vec = out[key] - mid_hip
+                vec[2] *= (1.0 - bend)
+                out[key] = mid_hip + vec
+
+    upper_keys = [
+        "spine",
+        "chest",
+        "upper_chest",
+        "neck",
+        "head",
+        "left_shoulder",
+        "right_shoulder",
+        "left_shoulder_clavicle",
+        "right_shoulder_clavicle",
+        "left_upper_arm",
+        "right_upper_arm",
+        "left_elbow",
+        "right_elbow",
+        "left_wrist",
+        "right_wrist",
+        "left_hand",
+        "right_hand",
+        "left_thumb_metacarpal",
+        "left_thumb_proximal",
+        "left_thumb_distal",
+        "right_thumb_metacarpal",
+        "right_thumb_proximal",
+        "right_thumb_distal",
+        "left_index_proximal",
+        "left_index_intermediate",
+        "left_index_distal",
+        "right_index_proximal",
+        "right_index_intermediate",
+        "right_index_distal",
+        "left_middle_proximal",
+        "left_middle_intermediate",
+        "left_middle_distal",
+        "right_middle_proximal",
+        "right_middle_intermediate",
+        "right_middle_distal",
+        "left_ring_proximal",
+        "left_ring_intermediate",
+        "left_ring_distal",
+        "right_ring_proximal",
+        "right_ring_intermediate",
+        "right_ring_distal",
+        "left_little_proximal",
+        "left_little_intermediate",
+        "left_little_distal",
+        "right_little_proximal",
+        "right_little_intermediate",
+        "right_little_distal",
+    ]
+    if corrections.upper_rotation_offset_deg:
+        _rotate_points_about_y(out, upper_keys, corrections.upper_rotation_offset_deg, mid_hip)
+
+    arm_dx = shoulder_span * 0.08 * (float(corrections.arm_horizontal_offset_percent) / 100.0)
+    arm_dy = shoulder_span * 0.05 * (float(corrections.arm_vertical_offset_percent) / 100.0)
+    if abs(arm_dx) > 1e-8 or abs(arm_dy) > 1e-8:
+        arm_keys = [
+            "left_shoulder",
+            "left_shoulder_clavicle",
+            "left_upper_arm",
+            "left_elbow",
+            "left_wrist",
+            "left_hand",
+            "left_thumb_metacarpal",
+            "left_thumb_proximal",
+            "left_thumb_distal",
+            "left_index_proximal",
+            "left_index_intermediate",
+            "left_index_distal",
+            "left_middle_proximal",
+            "left_middle_intermediate",
+            "left_middle_distal",
+            "left_ring_proximal",
+            "left_ring_intermediate",
+            "left_ring_distal",
+            "left_little_proximal",
+            "left_little_intermediate",
+            "left_little_distal",
+        ]
+        for key in arm_keys:
+            if key in out:
+                out[key][0] -= arm_dx
+                out[key][1] += arm_dy
+        for key in [k.replace("left_", "right_") for k in arm_keys]:
+            if key in out:
+                out[key][0] += arm_dx
+                out[key][1] += arm_dy
+
+    if corrections.body_collider_mode > 0:
+        body_height = float(np.linalg.norm(out["head"] - mid_hip))
+        if body_height < 1e-6:
+            body_height = shoulder_span * 2.1
+        if body_height < 1e-6:
+            body_height = 1.0
+
+        zone_defs = [
+            (
+                "head",
+                corrections.body_collider_head_size_percent,
+                0.76,
+                [
+                    "head",
+                    "nose",
+                    "neck",
+                    "upper_chest",
+                ],
+            ),
+            (
+                "chest",
+                corrections.body_collider_chest_size_percent,
+                0.50,
+                [
+                    "chest",
+                    "spine",
+                    "left_shoulder_clavicle",
+                    "right_shoulder_clavicle",
+                    "left_shoulder",
+                    "right_shoulder",
+                    "left_upper_arm",
+                    "right_upper_arm",
+                    "left_elbow",
+                    "right_elbow",
+                    "left_wrist",
+                    "right_wrist",
+                    "left_hand",
+                    "right_hand",
+                ],
+            ),
+            (
+                "waist",
+                corrections.body_collider_waist_size_percent,
+                0.24,
+                [
+                    "mid_hip",
+                    "hips",
+                    "left_hip",
+                    "right_hip",
+                    "left_upper_leg",
+                    "right_upper_leg",
+                ],
+            ),
+            (
+                "hip",
+                corrections.body_collider_hip_size_percent,
+                0.00,
+                [
+                    "left_lower_leg",
+                    "right_lower_leg",
+                    "left_ankle",
+                    "right_ankle",
+                    "left_heel",
+                    "right_heel",
+                    "left_toes",
+                    "right_toes",
+                ],
+            ),
+        ]
+        for zone_name, size_percent, min_height, zone_keys in zone_defs:
+            if corrections.body_collider_mode == 1 and zone_name == "hip":
+                continue
+            if size_percent is None:
+                continue
+            size_scale = max(0.25, float(size_percent) / 100.0)
+            zone_lateral_base = shoulder_span * (0.12 if zone_name == "head" else 0.24 if zone_name == "chest" else 0.20 if zone_name == "waist" else 0.17)
+            zone_depth_base = shoulder_span * (0.10 if zone_name == "head" else 0.22 if zone_name == "chest" else 0.18 if zone_name == "waist" else 0.15)
+            zone_height_base = min_height * body_height
+            for key in zone_keys:
+                if key not in out:
+                    continue
+                point = out[key]
+                rel = point - mid_hip
+                height = rel[1]
+                if height < zone_height_base - body_height * 0.04:
+                    continue
+                target_lateral = zone_lateral_base * size_scale
+                current_lateral = abs(rel[0])
+                if current_lateral < target_lateral:
+                    sign = -1.0 if rel[0] < 0.0 else 1.0
+                    blend = 0.60
+                    point[0] = point[0] * (1.0 - blend) + (mid_hip[0] + sign * target_lateral) * blend
+                target_depth = zone_depth_base * size_scale
+                current_depth = abs(rel[2])
+                if current_depth < target_depth:
+                    sign = -1.0 if rel[2] < 0.0 else 1.0
+                    blend = 0.45
+                    point[2] = point[2] * (1.0 - blend) + (mid_hip[2] + sign * target_depth) * blend
+
+    if corrections.use_arm_ik:
+        arm_floor = shoulder_span * 0.16
+        forearm_floor = shoulder_span * 0.24
+        for side, sign in (("left", -1.0), ("right", 1.0)):
+            for key, floor in [
+                (f"{side}_shoulder_clavicle", arm_floor),
+                (f"{side}_shoulder", arm_floor * 1.05),
+                (f"{side}_elbow", forearm_floor),
+                (f"{side}_wrist", forearm_floor * 1.15),
+                (f"{side}_hand", forearm_floor * 1.2),
+            ]:
+                point = out.get(key)
+                if point is None:
+                    continue
+                rel_x = (point[0] - mid_hip[0]) * sign
+                if rel_x < floor:
+                    point[0] = mid_hip[0] + sign * floor
+
+    if corrections.use_leg_ik:
+        leg_floor = hip_span * 0.16
+        lower_leg_floor = hip_span * 0.12
+        for side, sign in (("left", -1.0), ("right", 1.0)):
+            for key, floor in [
+                (f"{side}_hip", leg_floor),
+                (f"{side}_knee", lower_leg_floor),
+                (f"{side}_ankle", lower_leg_floor * 0.95),
+                (f"{side}_heel", lower_leg_floor * 0.9),
+                (f"{side}_toes", lower_leg_floor * 0.9),
+            ]:
+                point = out.get(key)
+                if point is None:
+                    continue
+                rel_x = (point[0] - mid_hip[0]) * sign
+                if rel_x < floor:
+                    point[0] = mid_hip[0] + sign * floor
+
+    if corrections.shoulder_tracking and "left_shoulder_clavicle" in out and "right_shoulder_clavicle" in out:
+        span = out["right_shoulder_clavicle"] - out["left_shoulder_clavicle"]
+        if np.linalg.norm(span) > 1e-6:
+            out["chest"] = (out["left_shoulder_clavicle"] + out["right_shoulder_clavicle"]) * 0.5
+            out["spine"] = out["mid_hip"] + (out["chest"] - out["mid_hip"]) * 0.5
+            out["upper_chest"] = out["chest"] + (out["neck"] - out["chest"]) * 0.5 if "neck" in out else out["chest"]
+
+    return out
+
+
+def _canonicalize_pose_points(
+    pts: Dict[str, np.ndarray],
+    basis: np.ndarray,
+    origin: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    inv_basis = basis.T
+    out: Dict[str, np.ndarray] = {}
+    for key, value in pts.items():
+        out[key] = inv_basis @ (np.array(value, dtype=np.float64) - origin)
+    return out
 
 
 def bvh_hierarchy_lines(rest_offsets: Dict[str, np.ndarray]) -> List[str]:
@@ -80,6 +1198,7 @@ def frame_channels(
     pts: Dict[str, np.ndarray],
     rest_offsets: Dict[str, np.ndarray],
     ref_root: np.ndarray,
+    corrections: Optional[PoseCorrectionProfile] = None,
 ) -> List[float]:
     channels: List[float] = []
     root_name = JOINTS[0].name
@@ -87,18 +1206,88 @@ def frame_channels(
     root_pos = pts[root_point_name] - ref_root
     global_rot: Dict[str, np.ndarray] = {root_name: np.eye(3)}
 
+    def body_forward_vector(pts_cur: Dict[str, np.ndarray]) -> np.ndarray:
+        mid_hip = pts_cur.get("mid_hip", np.zeros(3, dtype=np.float64))
+        chest = pts_cur.get("chest", mid_hip + np.array([0.0, 1.0, 0.0], dtype=np.float64))
+        nose = pts_cur.get("nose", chest)
+        shoulder_side = pts_cur.get("right_shoulder", chest) - pts_cur.get("left_shoulder", chest)
+        hip_side = pts_cur.get("right_hip", mid_hip) - pts_cur.get("left_hip", mid_hip)
+        side = shoulder_side if np.linalg.norm(shoulder_side) > 1e-6 else hip_side
+        if np.linalg.norm(side) < 1e-6:
+            side = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        up = chest - mid_hip
+        if np.linalg.norm(up) < 1e-6:
+            up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        forward = np.cross(normalize(side), normalize(up))
+        if np.linalg.norm(forward) < 1e-6:
+            forward = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        nose_dir = nose - mid_hip
+        if np.linalg.norm(nose_dir) > 1e-6 and float(np.dot(forward, nose_dir)) < 0.0:
+            forward = -forward
+        return normalize(forward)
+
     def secondary_vectors_for_joint(name: str, pts_cur: Dict[str, np.ndarray], rest: Dict[str, np.ndarray]) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         if name == "hips":
-            cur_side = pts_cur["right_hip"] - pts_cur["left_hip"]
-            rest_side = rest["rightUpperLeg"] - rest["leftUpperLeg"]
-            return cur_side, rest_side
-        if name in ("spine", "chest", "upperChest"):
-            cur_side = pts_cur["right_shoulder"] - pts_cur["left_shoulder"]
-            rest_side = rest["rightUpperArm"] - rest["leftUpperArm"]
-            return cur_side, rest_side
+            chest = pts_cur.get("chest")
+            mid_hip = pts_cur.get("mid_hip")
+            if chest is not None and mid_hip is not None:
+                return chest - mid_hip, np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            return None, None
+
+        if name in {"leftUpperLeg", "rightUpperLeg", "leftLowerLeg", "rightLowerLeg", "leftFoot", "rightFoot"}:
+            body_forward = body_forward_vector(pts_cur)
+            if np.linalg.norm(body_forward) > 1e-6:
+                return body_forward, np.array([0.0, 0.0, 1.0], dtype=np.float64)
         return None, None
 
     def solve_joint(name: str) -> Tuple[float, float, float]:
+        if name == root_name:
+            left_hip = pts["left_hip"]
+            right_hip = pts["right_hip"]
+            left_shoulder = pts["left_shoulder"]
+            right_shoulder = pts["right_shoulder"]
+            mid_hip = pts["mid_hip"]
+            chest = pts["chest"]
+            nose = pts.get("nose", chest)
+
+            hip_weight = 0.82 if corrections and corrections.hip_camera else 0.58
+            shoulder_weight = 1.0 - hip_weight if (corrections is None or corrections.shoulder_tracking) else 0.0
+            if shoulder_weight <= 0.0:
+                side_vec = right_hip - left_hip
+            else:
+                side_vec = hip_weight * (right_hip - left_hip) + shoulder_weight * (right_shoulder - left_shoulder)
+            side_xz = normalize(np.array([side_vec[0], 0.0, side_vec[2]], dtype=np.float64))
+
+            up_vec = chest - mid_hip
+            if np.linalg.norm(up_vec) < 1e-8:
+                up_vec = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+            up_vec = normalize(up_vec)
+
+            forward_vec = np.cross(side_xz, up_vec)
+            forward_xz = np.array([forward_vec[0], 0.0, forward_vec[2]], dtype=np.float64)
+            forward_norm = np.linalg.norm(forward_xz)
+            if forward_norm < 1e-7:
+                yaw_deg = 0.0
+            else:
+                forward_xz /= forward_norm
+                nose_dir = np.array([nose[0] - mid_hip[0], 0.0, nose[2] - mid_hip[2]], dtype=np.float64)
+                if np.linalg.norm(nose_dir) > 1e-7 and float(np.dot(forward_xz, nose_dir)) < 0.0:
+                    forward_xz = -forward_xz
+                yaw_deg = float(np.degrees(np.arctan2(forward_xz[0], forward_xz[2])))
+
+            yaw_rad = np.radians(yaw_deg)
+            cos_y = float(np.cos(yaw_rad))
+            sin_y = float(np.sin(yaw_rad))
+            global_rot[name] = np.array(
+                [
+                    [cos_y, 0.0, sin_y],
+                    [0.0, 1.0, 0.0],
+                    [-sin_y, 0.0, cos_y],
+                ],
+                dtype=np.float64,
+            )
+            return (0.0, 0.0, yaw_deg)
+
         children = CHILDREN.get(name, [])
         if not children:
             return (0.0, 0.0, 0.0)
@@ -365,18 +1554,16 @@ def update_tracking_roi(
     return clamp_roi_box(target, frame_w, frame_h, min_side=min_side)
 
 
-def convert_video_to_bvh(
+def collect_detected_pose_samples(
     input_path: Path,
     model_complexity: int,
     min_detection_confidence: float,
     min_tracking_confidence: float,
-    max_gap_interpolate: int = 8,
     progress_every: int = 100,
     opencv_enhance: str = "off",
     max_frame_side: int = 0,
     roi_crop: str = "off",
-) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]]]:
-    # Lazy import of heavy deps keeps CLI/help and unit tests lightweight.
+) -> Tuple[float, List[Optional[Dict[str, np.ndarray]]], List[Dict[str, np.ndarray]], Dict[str, int]]:
     import cv2
     import mediapipe as mp
     from mediapipe.tasks import python as mp_tasks_python
@@ -507,6 +1694,44 @@ def convert_video_to_bvh(
             file=sys.stderr,
         )
 
+    stats = {
+        "frames": frame_idx,
+        "detected": detected_count,
+        "roi_used": roi_used_count,
+        "roi_fallback": roi_fallback_count,
+        "roi_resets": roi_reset_count,
+    }
+    return fps, frames_pts_raw, detected_samples, stats
+
+
+def convert_video_to_bvh(
+    input_path: Path,
+    model_complexity: int,
+    min_detection_confidence: float,
+    min_tracking_confidence: float,
+    max_gap_interpolate: int = 8,
+    progress_every: int = 100,
+    opencv_enhance: str = "off",
+    max_frame_side: int = 0,
+    roi_crop: str = "off",
+    pose_corrections: Optional[PoseCorrectionProfile] = None,
+    root_yaw_offset_deg: float = 0.0,
+) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]]]:
+    fps, frames_pts_raw, detected_samples, scan_stats = collect_detected_pose_samples(
+        input_path=input_path,
+        model_complexity=model_complexity,
+        min_detection_confidence=min_detection_confidence,
+        min_tracking_confidence=min_tracking_confidence,
+        progress_every=progress_every,
+        opencv_enhance=opencv_enhance,
+        max_frame_side=max_frame_side,
+        roi_crop=roi_crop,
+    )
+    detected_count = scan_stats["detected"]
+    roi_used_count = scan_stats["roi_used"]
+    roi_fallback_count = scan_stats["roi_fallback"]
+    roi_reset_count = scan_stats["roi_resets"]
+
     frames_pts, interpolated_frames, carried_frames = fill_pose_gaps(frames_pts_raw, max_gap_interpolate)
     print(
         (
@@ -516,12 +1741,52 @@ def convert_video_to_bvh(
         file=sys.stderr,
     )
 
-    rest_offsets = build_rest_offsets(detected_samples if detected_samples else frames_pts[:20])
+    anchor_samples = detected_samples if detected_samples else frames_pts[:20]
+    reference_sample = _median_pose_sample(anchor_samples)
+    corrections = pose_corrections or DEFAULT_POSE_CORRECTIONS
+    auto_meta: Dict[str, Any] = {}
+    if corrections.mode == "auto":
+        corrections, auto_meta = resolve_auto_pose_corrections(anchor_samples, corrections)
+        print(
+            f"[vid2model] pose_corrections auto label={auto_meta.get('label', 'default')} "
+            f"score={auto_meta.get('heuristic_score', auto_meta.get('model_score', 0.0))}",
+            file=sys.stderr,
+        )
+    reference_basis, reference_origin = _build_reference_basis(reference_sample, corrections)
+    frames_pts = [_canonicalize_pose_points(pts, reference_basis, reference_origin) for pts in frames_pts]
+    canonical_anchor_samples = [
+        _canonicalize_pose_points(sample, reference_basis, reference_origin) for sample in anchor_samples
+    ]
+    frames_pts = [_apply_pose_corrections(pts, corrections) for pts in frames_pts]
+    canonical_anchor_samples = [_apply_pose_corrections(sample, corrections) for sample in canonical_anchor_samples]
+    frames_pts, cleanup_stats = cleanup_pose_frames(frames_pts, canonical_anchor_samples)
+    canonical_anchor_samples, _ = cleanup_pose_frames(canonical_anchor_samples, canonical_anchor_samples)
+    print(
+        (
+            f"[vid2model] source_cleanup side_swaps={int(cleanup_stats['side_swaps'])} "
+            f"smooth_alpha={cleanup_stats['smooth_alpha']:.2f} "
+            f"segments={int(cleanup_stats['length_constraints'])}"
+        ),
+        file=sys.stderr,
+    )
+    rest_offsets = build_rest_offsets(canonical_anchor_samples)
     root_point_name = MAP_TO_POINTS[JOINTS[0].name][0]
     ref_root = frames_pts[0][root_point_name].copy()
 
     motion_values = []
     for pts in frames_pts:
-        motion_values.append(frame_channels(pts, rest_offsets, ref_root))
+        motion_values.append(frame_channels(pts, rest_offsets, ref_root, corrections))
+    motion_values, yaw_norm_stats = normalize_motion_root_yaw(motion_values)
+    if yaw_norm_stats["applied"] > 0.5:
+        print(
+            (
+                f"[vid2model] root_yaw normalized offset={yaw_norm_stats['offset_deg']:.0f} "
+                f"near0={int(yaw_norm_stats['near0'])} near180={int(yaw_norm_stats['near180'])}"
+            ),
+            file=sys.stderr,
+        )
+    if np.isfinite(root_yaw_offset_deg) and abs(float(root_yaw_offset_deg)) > 1e-6:
+        motion_values = apply_manual_root_yaw_offset(motion_values, float(root_yaw_offset_deg))
+        print(f"[vid2model] root_yaw manual_offset={float(root_yaw_offset_deg):.0f}", file=sys.stderr)
 
     return fps, rest_offsets, motion_values, ref_root, frames_pts

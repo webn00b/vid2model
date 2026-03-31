@@ -9,6 +9,7 @@ MAX_PYTHON_MINOR=12
 OPENCV_ENHANCE="${OPENCV_ENHANCE:-off}"
 MAX_FRAME_SIDE="${MAX_FRAME_SIDE:-0}"
 ROI_CROP="${ROI_CROP:-off}"
+ROOT_YAW_OFFSET_DEG="${ROOT_YAW_OFFSET_DEG:-0}"
 
 python_minor() {
   "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
@@ -78,6 +79,7 @@ Environment knobs:
   OPENCV_ENHANCE=off|light|strong   OpenCV pre-processing before pose detection.
   MAX_FRAME_SIDE=0|N                Resize frame so longest side <= N (0 disables).
   ROI_CROP=off|auto                 Adaptive person ROI crop between frames.
+  ROOT_YAW_OFFSET_DEG=0|180|-90     Extra source root yaw offset in degrees.
 USAGE
 }
 
@@ -185,6 +187,9 @@ if [[ -n "$MAX_FRAME_SIDE" ]]; then
 fi
 if [[ -n "$ROI_CROP" ]]; then
   CMD+=(--roi-crop "$ROI_CROP")
+fi
+if [[ -n "$ROOT_YAW_OFFSET_DEG" ]]; then
+  CMD+=(--root-yaw-offset-deg "$ROOT_YAW_OFFSET_DEG")
 fi
 
 "${CMD[@]}"

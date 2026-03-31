@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from .pipeline import convert_video_to_bvh
+from .pipeline import build_pose_correction_profile, convert_video_to_bvh
 from .writers import write_bvh, write_csv, write_json, write_npz, write_trc
 
 
@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
         help="Adaptive ROI crop around detected person between frames.",
     )
     parser.add_argument("--progress-every", type=int, help="Print progress every N frames (0 disables).")
+    parser.add_argument("--root-yaw-offset-deg", type=float, help="Extra source root yaw offset in degrees.")
     parser.add_argument("--check-tools", action="store_true", help="Validate local toolchain and exit.")
     return parser.parse_args()
 
@@ -121,6 +122,8 @@ def main() -> int:
     max_frame_side = int(merged("max_frame_side", 0))
     roi_crop = str(merged("roi_crop", "off")).strip().lower()
     progress_every = int(merged("progress_every", 100))
+    root_yaw_offset_deg = float(merged("root_yaw_offset_deg", 0.0))
+    pose_corrections = build_pose_correction_profile(cfg.get("pose_corrections"))
 
     if model_complexity not in (0, 1, 2):
         raise ValueError("model_complexity must be one of: 0, 1, 2")
@@ -178,6 +181,8 @@ def main() -> int:
         max_frame_side=max_frame_side,
         roi_crop=roi_crop,
         progress_every=progress_every,
+        pose_corrections=pose_corrections,
+        root_yaw_offset_deg=root_yaw_offset_deg,
     )
 
     if output_bvh is not None:
