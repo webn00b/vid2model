@@ -43,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--progress-every", type=int, help="Print progress every N frames (0 disables).")
     parser.add_argument("--root-yaw-offset-deg", type=float, help="Extra source root yaw offset in degrees.")
+    parser.add_argument(
+        "--lower-body-rotation-mode",
+        choices=["off", "invert", "yaw180"],
+        help="Optional lower-body source rotation correction.",
+    )
     parser.add_argument("--check-tools", action="store_true", help="Validate local toolchain and exit.")
     return parser.parse_args()
 
@@ -123,6 +128,7 @@ def main() -> int:
     roi_crop = str(merged("roi_crop", "off")).strip().lower()
     progress_every = int(merged("progress_every", 100))
     root_yaw_offset_deg = float(merged("root_yaw_offset_deg", 0.0))
+    lower_body_rotation_mode = str(merged("lower_body_rotation_mode", "off")).strip().lower()
     pose_corrections = build_pose_correction_profile(cfg.get("pose_corrections"))
 
     if model_complexity not in (0, 1, 2):
@@ -141,6 +147,8 @@ def main() -> int:
         raise ValueError("roi_crop must be one of: off, auto")
     if progress_every < 0:
         raise ValueError("progress_every must be >= 0")
+    if lower_body_rotation_mode not in ("off", "invert", "yaw180"):
+        raise ValueError("lower_body_rotation_mode must be one of: off, invert, yaw180")
 
     if not input_value:
         raise ValueError("Specify --input (or use --check-tools).")
@@ -183,6 +191,7 @@ def main() -> int:
         progress_every=progress_every,
         pose_corrections=pose_corrections,
         root_yaw_offset_deg=root_yaw_offset_deg,
+        lower_body_rotation_mode=lower_body_rotation_mode,
     )
 
     if output_bvh is not None:

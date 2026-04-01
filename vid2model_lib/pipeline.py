@@ -683,6 +683,38 @@ def apply_manual_root_yaw_offset(
     return adjusted
 
 
+def apply_lower_body_rotation_mode(
+    motion_values: List[List[float]],
+    mode: str,
+) -> List[List[float]]:
+    normalized_mode = str(mode or "off").strip().lower()
+    if normalized_mode == "off" or not motion_values:
+        return motion_values
+
+    joint_names = [joint.name for joint in JOINTS]
+    target_joints = {"leftUpperLeg", "leftLowerLeg", "leftFoot", "rightUpperLeg", "rightLowerLeg", "rightFoot"}
+    target_indices = {name for name in target_joints if name in joint_names}
+    adjusted: List[List[float]] = []
+
+    for frame in motion_values:
+        updated = list(frame)
+        for joint_index, joint_name in enumerate(joint_names[1:], start=1):
+            if joint_name not in target_indices:
+                continue
+            base = 6 + (joint_index - 1) * 3
+            if base + 2 >= len(updated):
+                continue
+            rz, rx, ry = updated[base], updated[base + 1], updated[base + 2]
+            if normalized_mode == "invert":
+                updated[base] = _wrap_angle_deg(-float(rz))
+                updated[base + 1] = _wrap_angle_deg(-float(rx))
+                updated[base + 2] = _wrap_angle_deg(-float(ry))
+            elif normalized_mode == "yaw180":
+                updated[base + 2] = _wrap_angle_deg(float(ry) + 180.0)
+        adjusted.append(updated)
+    return adjusted
+
+
 def build_rest_offsets(samples: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
     rest: Dict[str, np.ndarray] = {}
     if not samples:
@@ -1716,6 +1748,7 @@ def convert_video_to_bvh(
     roi_crop: str = "off",
     pose_corrections: Optional[PoseCorrectionProfile] = None,
     root_yaw_offset_deg: float = 0.0,
+    lower_body_rotation_mode: str = "off",
 ) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]]]:
     fps, frames_pts_raw, detected_samples, scan_stats = collect_detected_pose_samples(
         input_path=input_path,
@@ -1788,5 +1821,8 @@ def convert_video_to_bvh(
     if np.isfinite(root_yaw_offset_deg) and abs(float(root_yaw_offset_deg)) > 1e-6:
         motion_values = apply_manual_root_yaw_offset(motion_values, float(root_yaw_offset_deg))
         print(f"[vid2model] root_yaw manual_offset={float(root_yaw_offset_deg):.0f}", file=sys.stderr)
+    if str(lower_body_rotation_mode or "off").strip().lower() != "off":
+        motion_values = apply_lower_body_rotation_mode(motion_values, lower_body_rotation_mode)
+        print(f"[vid2model] lower_body_rotation mode={str(lower_body_rotation_mode).strip().lower()}", file=sys.stderr)
 
     return fps, rest_offsets, motion_values, ref_root, frames_pts

@@ -54,30 +54,33 @@ def _build_hand_points(side: str, pts: Dict[str, np.ndarray]) -> Dict[str, np.nd
     palm_center = (index_tip + pinky_tip) * 0.5
     hand_dir = _safe_normalized(palm_center - wrist, forearm_dir)
     hand_span = np.linalg.norm(index_tip - pinky_tip)
+    forearm_len = np.linalg.norm(wrist - elbow)
     if hand_span < 1e-6:
-        hand_span = max(np.linalg.norm(wrist - elbow) * 0.35, 1.0)
-    finger_len = max(np.linalg.norm(palm_center - wrist), hand_span * 0.55, 1.0)
-    hand = wrist + hand_dir * (0.2 * finger_len)
+        hand_span = max(forearm_len * 0.22, 1.0)
+    palm_len = np.linalg.norm(palm_center - wrist)
+    max_finger_len = max(forearm_len * 0.36, hand_span * 0.9, 1.0)
+    finger_len = min(max(palm_len * 0.7, hand_span * 0.32, 1.0), max_finger_len)
+    hand = wrist + hand_dir * (0.12 * finger_len)
 
-    middle_tip = palm_center + hand_dir * (0.45 * finger_len)
-    ring_tip = pinky_tip * 0.65 + index_tip * 0.35 + hand_dir * (0.2 * finger_len)
+    middle_tip = palm_center + hand_dir * (0.2 * finger_len)
+    ring_tip = pinky_tip * 0.65 + index_tip * 0.35 + hand_dir * (0.08 * finger_len)
 
     def finger_chain(tip: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         vec = tip - hand
         if np.linalg.norm(vec) < 1e-6:
             vec = hand_dir * finger_len
-        proximal = hand + vec * 0.35
-        intermediate = hand + vec * 0.7
-        distal = hand + vec
+        proximal = hand + vec * 0.28
+        intermediate = hand + vec * 0.58
+        distal = hand + vec * 0.82
         return proximal, intermediate, distal
 
     def thumb_chain(tip: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         vec = tip - hand
         if np.linalg.norm(vec) < 1e-6:
-            vec = hand_dir * finger_len
-        metacarpal = hand + vec * 0.25
-        proximal = hand + vec * 0.6
-        distal = hand + vec
+            vec = hand_dir * (finger_len * 0.75)
+        metacarpal = hand + vec * 0.18
+        proximal = hand + vec * 0.42
+        distal = hand + vec * 0.68
         return metacarpal, proximal, distal
 
     index_prox, index_inter, index_dist = finger_chain(index_tip)
