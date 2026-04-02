@@ -315,6 +315,54 @@ class CliValidationTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             mocked_write_diag.assert_called_once()
 
+    def test_missing_skeleton_profile_json_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            argv = [
+                "convert_video_to_bvh.py",
+                "--input",
+                str(video),
+                "--output-bvh",
+                str(tmp / "out.bvh"),
+                "--skeleton-profile-json",
+                str(tmp / "missing.json"),
+            ]
+            with patch("sys.argv", argv):
+                with self.assertRaisesRegex(FileNotFoundError, "Skeleton profile JSON not found"):
+                    cli.main()
+
+    def test_skeleton_profile_json_is_forwarded_to_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            profile = tmp / "profile.json"
+            profile.write_text(json.dumps({"joint_offsets": {"spine": [0, 10, 0]}}), encoding="utf-8")
+            argv = [
+                "convert_video_to_bvh.py",
+                "--input",
+                str(video),
+                "--output-bvh",
+                str(tmp / "out.bvh"),
+                "--skeleton-profile-json",
+                str(profile),
+            ]
+            with patch("sys.argv", argv):
+                with patch(
+                    "vid2model_lib.cli.convert_video_to_bvh",
+                    return_value=(30.0, {}, [[0.0] * 54], [0.0, 0.0, 0.0], [], {}),
+                ) as mocked_convert:
+                    with patch("vid2model_lib.cli.write_bvh"):
+                        rc = cli.main()
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(
+                mocked_convert.call_args.kwargs["skeleton_profile"]["joint_offsets"]["spine"],
+                [0, 10, 0],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

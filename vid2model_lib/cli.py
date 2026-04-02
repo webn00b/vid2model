@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-npz", help="Path to output NPZ file (compressed arrays).")
     parser.add_argument("--output-trc", help="Path to output TRC file (marker trajectories).")
     parser.add_argument("--output-diag-json", help="Path to output diagnostic JSON file.")
+    parser.add_argument("--skeleton-profile-json", help="Path to model skeleton profile JSON used to override BVH rest offsets.")
     parser.add_argument("--model-complexity", type=int, choices=[0, 1, 2])
     parser.add_argument("--min-detection-confidence", type=float)
     parser.add_argument("--min-tracking-confidence", type=float)
@@ -126,6 +127,7 @@ def main() -> int:
     output_npz_value = merged("output_npz", None)
     output_trc_value = merged("output_trc", None)
     output_diag_json_value = merged("output_diag_json", None)
+    skeleton_profile_json_value = merged("skeleton_profile_json", None)
     model_complexity = int(merged("model_complexity", 1))
     min_detection_confidence = float(merged("min_detection_confidence", 0.5))
     min_tracking_confidence = float(merged("min_tracking_confidence", 0.5))
@@ -170,6 +172,7 @@ def main() -> int:
     output_npz = Path(output_npz_value).expanduser().resolve() if output_npz_value else None
     output_trc = Path(output_trc_value).expanduser().resolve() if output_trc_value else None
     output_diag_json = Path(output_diag_json_value).expanduser().resolve() if output_diag_json_value else None
+    skeleton_profile_json = Path(skeleton_profile_json_value).expanduser().resolve() if skeleton_profile_json_value else None
 
     if output_value:
         if output_bvh is not None:
@@ -178,6 +181,15 @@ def main() -> int:
 
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
+    if skeleton_profile_json is not None and not skeleton_profile_json.exists():
+        raise FileNotFoundError(f"Skeleton profile JSON not found: {skeleton_profile_json}")
+
+    skeleton_profile: Dict[str, Any] | None = None
+    if skeleton_profile_json is not None:
+        loaded = json.loads(skeleton_profile_json.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError("Skeleton profile JSON root must be an object/map.")
+        skeleton_profile = loaded
 
     if (
         output_bvh is None
@@ -202,6 +214,7 @@ def main() -> int:
         roi_crop=roi_crop,
         progress_every=progress_every,
         pose_corrections=pose_corrections,
+        skeleton_profile=skeleton_profile,
         root_yaw_offset_deg=root_yaw_offset_deg,
         lower_body_rotation_mode=lower_body_rotation_mode,
         loop_mode=loop_mode,
