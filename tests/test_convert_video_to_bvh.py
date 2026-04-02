@@ -71,6 +71,57 @@ def make_pose_points() -> dict[str, np.ndarray]:
 
 
 class ConvertVideoToBvhTests(unittest.TestCase):
+    def test_extract_pose_points_supports_legacy_mediapipe_result_shape(self) -> None:
+        class _LM:
+            def __init__(self, x: float, y: float, z: float) -> None:
+                self.x = x
+                self.y = y
+                self.z = z
+
+        class _LandmarkList:
+            def __init__(self, landmarks) -> None:
+                self.landmark = landmarks
+
+        class _Res:
+            pass
+
+        world = [_LM(0.0, 0.0, 0.0) for _ in range(33)]
+        world[v2m.LM["nose"]] = _LM(0.0, -0.4, 0.0)
+        world[v2m.LM["left_shoulder"]] = _LM(-0.2, -0.2, 0.0)
+        world[v2m.LM["right_shoulder"]] = _LM(0.2, -0.2, 0.0)
+        world[v2m.LM["left_elbow"]] = _LM(-0.35, -0.2, 0.0)
+        world[v2m.LM["right_elbow"]] = _LM(0.35, -0.2, 0.0)
+        world[v2m.LM["left_wrist"]] = _LM(-0.45, -0.2, 0.0)
+        world[v2m.LM["right_wrist"]] = _LM(0.45, -0.2, 0.0)
+        world[v2m.LM["left_pinky"]] = _LM(-0.5, -0.2, 0.02)
+        world[v2m.LM["right_pinky"]] = _LM(0.5, -0.2, 0.02)
+        world[v2m.LM["left_index"]] = _LM(-0.5, -0.18, 0.02)
+        world[v2m.LM["right_index"]] = _LM(0.5, -0.18, 0.02)
+        world[v2m.LM["left_thumb"]] = _LM(-0.48, -0.22, -0.01)
+        world[v2m.LM["right_thumb"]] = _LM(0.48, -0.22, -0.01)
+        world[v2m.LM["left_hip"]] = _LM(-0.1, 0.0, 0.0)
+        world[v2m.LM["right_hip"]] = _LM(0.1, 0.0, 0.0)
+        world[v2m.LM["left_knee"]] = _LM(-0.1, 0.2, 0.0)
+        world[v2m.LM["right_knee"]] = _LM(0.1, 0.2, 0.0)
+        world[v2m.LM["left_ankle"]] = _LM(-0.1, 0.4, 0.0)
+        world[v2m.LM["right_ankle"]] = _LM(0.1, 0.4, 0.0)
+        world[v2m.LM["left_heel"]] = _LM(-0.1, 0.4, -0.04)
+        world[v2m.LM["right_heel"]] = _LM(0.1, 0.4, -0.04)
+        world[v2m.LM["left_foot_index"]] = _LM(-0.1, 0.4, 0.08)
+        world[v2m.LM["right_foot_index"]] = _LM(0.1, 0.4, 0.08)
+
+        res = _Res()
+        res.pose_world_landmarks = _LandmarkList(world)
+        res.pose_landmarks = None
+
+        extracted = v2m.extract_pose_points(res)
+        self.assertIsNotNone(extracted)
+        assert extracted is not None
+        self.assertIn("left_toes", extracted)
+        self.assertIn("right_toes", extracted)
+        self.assertTrue(np.isfinite(extracted["left_toes"]).all())
+        self.assertTrue(np.isfinite(extracted["right_toes"]).all())
+
     def test_extract_pose_points_contains_all_mapped_points(self) -> None:
         class _LM:
             def __init__(self, x: float, y: float, z: float) -> None:
@@ -159,18 +210,21 @@ class ConvertVideoToBvhTests(unittest.TestCase):
             out_csv = base / "test.csv"
             out_npz = base / "test.npz"
             out_trc = base / "test.trc"
+            out_diag = base / "test.diag.json"
 
             v2m.write_bvh(out_bvh, fps, rest_offsets, motion_values)
             v2m.write_json(out_json, Path("think.mp4"), fps, rest_offsets, motion_values, ref_root)
             v2m.write_csv(out_csv, motion_values)
             v2m.write_npz(out_npz, Path("think.mp4"), fps, rest_offsets, motion_values, ref_root)
             v2m.write_trc(out_trc, Path("think.mp4"), fps, frames_pts, ref_root)
+            v2m.write_diagnostic_json(out_diag, {"cleanup": {"smooth_alpha": 0.35}})
 
             self.assertTrue(out_bvh.exists())
             self.assertTrue(out_json.exists())
             self.assertTrue(out_csv.exists())
             self.assertTrue(out_npz.exists())
             self.assertTrue(out_trc.exists())
+            self.assertTrue(out_diag.exists())
 
             bvh_text = out_bvh.read_text(encoding="utf-8")
             self.assertIn("HIERARCHY", bvh_text)
@@ -192,6 +246,9 @@ class ConvertVideoToBvhTests(unittest.TestCase):
             trc_text = out_trc.read_text(encoding="utf-8")
             self.assertIn("PathFileType", trc_text)
             self.assertIn("Frame#", trc_text)
+
+            diag_payload = json.loads(out_diag.read_text(encoding="utf-8"))
+            self.assertEqual(diag_payload["cleanup"]["smooth_alpha"], 0.35)
 
 
 if __name__ == "__main__":

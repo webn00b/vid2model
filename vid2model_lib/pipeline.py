@@ -4,7 +4,7 @@ import sys
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -602,21 +602,539 @@ def _apply_segment_length_constraints(
     return out
 
 
+def _copy_pose_frame(pts: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    return {key: np.array(value, dtype=np.float64) for key, value in pts.items()}
+
+
+def _detect_foot_contact_mask(
+    frames_pts: List[Dict[str, np.ndarray]],
+    side: str,
+) -> np.ndarray:
+    if len(frames_pts) < 2:
+        return np.zeros(len(frames_pts), dtype=bool)
+
+    ankle_key = f"{side}_ankle"
+    toes_key = f"{side}_toes"
+    heel_key = f"{side}_heel"
+
+    support_heights = []
+    foot_speeds = [0.0]
+    for idx, pts in enumerate(frames_pts):
+        ankle = np.array(pts[ankle_key], dtype=np.float64)
+        toes = np.array(pts[toes_key], dtype=np.float64)
+        heel = np.array(pts[heel_key], dtype=np.float64)
+        support_heights.append(float(min(ankle[1], toes[1], heel[1])))
+        if idx > 0:
+            prev = frames_pts[idx - 1]
+            prev_ankle = np.array(prev[ankle_key], dtype=np.float64)
+            prev_toes = np.array(prev[toes_key], dtype=np.float64)
+            ankle_speed = float(np.linalg.norm((ankle - prev_ankle)[[0, 2]]))
+            toes_speed = float(np.linalg.norm((toes - prev_toes)[[0, 2]]))
+            foot_speeds.append((ankle_speed + toes_speed) * 0.5)
+
+    height_floor = float(np.percentile(support_heights, 25))
+    height_tol = max(float(np.std(support_heights)) * 0.75, 0.8)
+    speed_tol = max(float(np.percentile(foot_speeds, 40)), 0.35)
+
+    mask = np.zeros(len(frames_pts), dtype=bool)
+    for idx, (height, speed) in enumerate(zip(support_heights, foot_speeds)):
+        if height <= height_floor + height_tol and speed <= speed_tol:
+            mask[idx] = True
+
+    if len(mask) >= 3:
+        refined = mask.copy()
+        for idx in range(1, len(mask) - 1):
+            if not mask[idx] and mask[idx - 1] and mask[idx + 1]:
+                refined[idx] = True
+        mask = refined
+    return mask
+
+
+def _mask_runs(mask: np.ndarray, min_len: int = 2) -> List[Tuple[int, int]]:
+    runs: List[Tuple[int, int]] = []
+    start: Optional[int] = None
+    for idx, value in enumerate(mask.tolist()):
+        if value and start is None:
+            start = idx
+        elif not value and start is not None:
+            if idx - start >= min_len:
+                runs.append((start, idx))
+            start = None
+    if start is not None and len(mask) - start >= min_len:
+        runs.append((start, len(mask)))
+    return runs
+
+
+def _stabilize_foot_contacts(
+    frames_pts: List[Dict[str, np.ndarray]],
+) -> Tuple[List[Dict[str, np.ndarray]], Dict[str, float]]:
+    if len(frames_pts) < 2:
+        return [_copy_pose_frame(pts) for pts in frames_pts], {"contact_windows": 0.0, "contact_frames": 0.0}
+
+    adjusted = [_copy_pose_frame(pts) for pts in frames_pts]
+    contact_windows = 0
+    contact_frames = 0
+
+    for side in ("left", "right"):
+        ankle_key = f"{side}_ankle"
+        toes_key = f"{side}_toes"
+        heel_key = f"{side}_heel"
+        mask = _detect_foot_contact_mask(adjusted, side)
+        for start, end in _mask_runs(mask, min_len=2):
+            window = adjusted[start:end]
+            if not window:
+                continue
+            contact_windows += 1
+            contact_frames += end - start
+
+            ankle_xz = np.median(np.stack([frame[ankle_key][[0, 2]] for frame in window], axis=0), axis=0)
+            toes_xz = np.median(np.stack([frame[toes_key][[0, 2]] for frame in window], axis=0), axis=0)
+            heel_xz = np.median(np.stack([frame[heel_key][[0, 2]] for frame in window], axis=0), axis=0)
+            support_target = float(
+                np.median(
+                    [
+                        min(float(frame[ankle_key][1]), float(frame[toes_key][1]), float(frame[heel_key][1]))
+                        for frame in window
+                    ]
+                )
+            )
+
+            for idx in range(start, end):
+                frame = adjusted[idx]
+                support_height = min(
+                    float(frame[ankle_key][1]),
+                    float(frame[toes_key][1]),
+                    float(frame[heel_key][1]),
+                )
+                delta_y = support_target - support_height
+                frame[ankle_key] = np.array(
+                    [ankle_xz[0], float(frame[ankle_key][1]) + delta_y, ankle_xz[1]],
+                    dtype=np.float64,
+                )
+                frame[toes_key] = np.array(
+                    [toes_xz[0], float(frame[toes_key][1]) + delta_y, toes_xz[1]],
+                    dtype=np.float64,
+                )
+                frame[heel_key] = np.array(
+                    [heel_xz[0], float(frame[heel_key][1]) + delta_y, heel_xz[1]],
+                    dtype=np.float64,
+                )
+
+    return adjusted, {
+        "contact_windows": float(contact_windows),
+        "contact_frames": float(contact_frames),
+    }
+
+
+def _stabilize_pelvis_during_contacts(
+    frames_pts: List[Dict[str, np.ndarray]],
+) -> Tuple[List[Dict[str, np.ndarray]], Dict[str, float]]:
+    if len(frames_pts) < 2:
+        return [_copy_pose_frame(pts) for pts in frames_pts], {"pelvis_contact_frames": 0.0}
+
+    adjusted = [_copy_pose_frame(pts) for pts in frames_pts]
+    desired_mid_hip_xz: List[List[np.ndarray]] = [[] for _ in adjusted]
+    pelvis_contact_frames = 0
+
+    for side in ("left", "right"):
+        ankle_key = f"{side}_ankle"
+        mask = _detect_foot_contact_mask(adjusted, side)
+        for start, end in _mask_runs(mask, min_len=2):
+            window = adjusted[start:end]
+            if not window:
+                continue
+            pelvis_contact_frames += end - start
+            target_offset = np.median(
+                np.stack(
+                    [
+                        np.array(frame["mid_hip"][[0, 2]], dtype=np.float64)
+                        - np.array(frame[ankle_key][[0, 2]], dtype=np.float64)
+                        for frame in window
+                    ],
+                    axis=0,
+                ),
+                axis=0,
+            )
+            for idx in range(start, end):
+                ankle_xz = np.array(adjusted[idx][ankle_key][[0, 2]], dtype=np.float64)
+                desired_mid_hip_xz[idx].append(ankle_xz + target_offset)
+
+    if pelvis_contact_frames <= 0:
+        return adjusted, {"pelvis_contact_frames": 0.0}
+
+    movable_keys = [
+        key
+        for key in adjusted[0].keys()
+        if key
+        not in {
+            "left_knee",
+            "right_knee",
+            "left_ankle",
+            "right_ankle",
+            "left_toes",
+            "right_toes",
+            "left_heel",
+            "right_heel",
+        }
+    ]
+
+    for idx, candidates in enumerate(desired_mid_hip_xz):
+        if not candidates:
+            continue
+        current_mid_hip = np.array(adjusted[idx]["mid_hip"][[0, 2]], dtype=np.float64)
+        target_mid_hip = np.mean(np.stack(candidates, axis=0), axis=0)
+        delta_xz = (target_mid_hip - current_mid_hip) * 0.7
+        if float(np.linalg.norm(delta_xz)) < 1e-8:
+            continue
+        for key in movable_keys:
+            point = np.array(adjusted[idx][key], dtype=np.float64)
+            point[0] += float(delta_xz[0])
+            point[2] += float(delta_xz[1])
+            adjusted[idx][key] = point
+
+    return adjusted, {"pelvis_contact_frames": float(pelvis_contact_frames)}
+
+
+def _apply_leg_ik_during_contacts(
+    frames_pts: List[Dict[str, np.ndarray]],
+    target_lengths: Dict[str, float],
+) -> Tuple[List[Dict[str, np.ndarray]], Dict[str, float]]:
+    if len(frames_pts) < 2:
+        return [_copy_pose_frame(pts) for pts in frames_pts], {"leg_ik_frames": 0.0}
+
+    adjusted = [_copy_pose_frame(pts) for pts in frames_pts]
+    leg_ik_frames = 0
+
+    for side in ("left", "right"):
+        hip_key = f"{side}_hip"
+        knee_key = f"{side}_knee"
+        ankle_key = f"{side}_ankle"
+        upper_len = float(target_lengths.get(f"{side}LowerLeg", 0.0))
+        lower_len = float(target_lengths.get(f"{side}Foot", 0.0))
+        if upper_len <= 1e-6 or lower_len <= 1e-6:
+            continue
+        mask = _detect_foot_contact_mask(adjusted, side)
+        for start, end in _mask_runs(mask, min_len=2):
+            for idx in range(start, end):
+                frame = adjusted[idx]
+                hip = np.array(frame[hip_key], dtype=np.float64)
+                ankle = np.array(frame[ankle_key], dtype=np.float64)
+                current_knee = np.array(frame[knee_key], dtype=np.float64)
+
+                root_to_end = ankle - hip
+                distance = float(np.linalg.norm(root_to_end))
+                if not np.isfinite(distance) or distance <= 1e-8:
+                    continue
+                direction = root_to_end / distance
+
+                bend_ref = current_knee - hip
+                bend_ref = bend_ref - direction * float(np.dot(bend_ref, direction))
+                bend_norm = float(np.linalg.norm(bend_ref))
+                if bend_norm <= 1e-8:
+                    lateral_sign = -1.0 if side == "left" else 1.0
+                    bend_ref = np.array([lateral_sign, 0.0, 0.0], dtype=np.float64)
+                    bend_ref = bend_ref - direction * float(np.dot(bend_ref, direction))
+                    bend_norm = float(np.linalg.norm(bend_ref))
+                    if bend_norm <= 1e-8:
+                        bend_ref = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+                        bend_ref = bend_ref - direction * float(np.dot(bend_ref, direction))
+                        bend_norm = float(np.linalg.norm(bend_ref))
+                        if bend_norm <= 1e-8:
+                            continue
+                bend_dir = bend_ref / bend_norm
+
+                clamped_dist = min(distance, upper_len + lower_len - 1e-6)
+                along = (clamped_dist * clamped_dist + upper_len * upper_len - lower_len * lower_len) / (2.0 * clamped_dist)
+                height_sq = max(0.0, upper_len * upper_len - along * along)
+                height = float(np.sqrt(height_sq))
+                new_knee = hip + direction * along + bend_dir * height
+                frame[knee_key] = np.array(new_knee, dtype=np.float64)
+                leg_ik_frames += 1
+
+    return adjusted, {"leg_ik_frames": float(leg_ik_frames)}
+
+
 def cleanup_pose_frames(
     frames_pts: List[Dict[str, np.ndarray]],
     anchor_samples: List[Dict[str, np.ndarray]],
+    use_contact_cleanup: bool = True,
 ) -> Tuple[List[Dict[str, np.ndarray]], Dict[str, float]]:
     if not frames_pts:
-        return frames_pts, {"side_swaps": 0.0, "smooth_alpha": 0.0, "length_constraints": 0.0}
+        return frames_pts, {
+            "side_swaps": 0.0,
+            "smooth_alpha": 0.0,
+            "length_constraints": 0.0,
+            "contact_windows": 0.0,
+            "contact_frames": 0.0,
+            "pelvis_contact_frames": 0.0,
+            "leg_ik_frames": 0.0,
+        }
 
-    # Keep source cleanup conservative by default: temporal smoothing helps
-    # jitter immediately, while aggressive side swapping / segment locking can
-    # invert the whole skeleton on difficult clips.
     smoothed = _smooth_pose_frames(frames_pts, alpha=0.35)
-    return smoothed, {
+    target_lengths = _build_target_segment_lengths(anchor_samples or smoothed[:20])
+    constrained = [_apply_segment_length_constraints(frame, target_lengths) for frame in smoothed]
+    if not use_contact_cleanup:
+        return constrained, {
+            "side_swaps": 0.0,
+            "smooth_alpha": 0.35,
+            "length_constraints": float(len(target_lengths)),
+            "contact_windows": 0.0,
+            "contact_frames": 0.0,
+            "pelvis_contact_frames": 0.0,
+            "leg_ik_frames": 0.0,
+        }
+    stabilized, contact_stats = _stabilize_foot_contacts(constrained)
+    stabilized, pelvis_stats = _stabilize_pelvis_during_contacts(stabilized)
+    stabilized = [_apply_segment_length_constraints(frame, target_lengths) for frame in stabilized]
+    stabilized, leg_ik_stats = _apply_leg_ik_during_contacts(stabilized, target_lengths)
+    return stabilized, {
         "side_swaps": 0.0,
         "smooth_alpha": 0.35,
-        "length_constraints": 0.0,
+        "length_constraints": float(len(target_lengths)),
+        "contact_windows": contact_stats["contact_windows"],
+        "contact_frames": contact_stats["contact_frames"],
+        "pelvis_contact_frames": pelvis_stats["pelvis_contact_frames"],
+        "leg_ik_frames": leg_ik_stats["leg_ik_frames"],
+    }
+
+
+LOOP_FEATURE_KEYS: Tuple[str, ...] = (
+    "spine",
+    "chest",
+    "upper_chest",
+    "neck",
+    "head",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+    "left_toes",
+    "right_toes",
+)
+
+
+def _loop_feature_vector(pts: Dict[str, np.ndarray]) -> np.ndarray:
+    mid_hip = np.array(pts.get("mid_hip", np.zeros(3, dtype=np.float64)), dtype=np.float64)
+    chest = np.array(pts.get("chest", mid_hip + np.array([0.0, 1.0, 0.0])), dtype=np.float64)
+    head = np.array(pts.get("head", chest), dtype=np.float64)
+    shoulder_width = float(
+        np.linalg.norm(
+            np.array(pts.get("right_shoulder", chest), dtype=np.float64)
+            - np.array(pts.get("left_shoulder", chest), dtype=np.float64)
+        )
+    )
+    torso_height = float(np.linalg.norm(head - mid_hip))
+    scale = max(shoulder_width, torso_height, 1e-6)
+    features = []
+    for key in LOOP_FEATURE_KEYS:
+        point = np.array(pts.get(key, mid_hip), dtype=np.float64)
+        features.append((point - mid_hip) / scale)
+    return np.concatenate(features, axis=0)
+
+
+def _find_best_loop_window(
+    feature_matrix: np.ndarray,
+    velocity_matrix: np.ndarray,
+    fps: float,
+) -> Optional[Dict[str, float]]:
+    frame_count = int(feature_matrix.shape[0])
+    min_frames = max(8, int(round(max(float(fps), 1.0) * 0.6)))
+    if frame_count < min_frames + 4:
+        return None
+
+    start_limit = max(1, int(frame_count * 0.25))
+    end_start = max(min_frames, int(frame_count * 0.6))
+    best: Optional[Tuple[float, int, int, float, float, float]] = None
+
+    for start in range(0, start_limit + 1):
+        for end in range(end_start, frame_count):
+            length = end - start + 1
+            if length < min_frames:
+                continue
+            pose_dist = float(np.linalg.norm(feature_matrix[start] - feature_matrix[end]))
+            vel_start_idx = min(start + 1, frame_count - 1)
+            vel_end_idx = end
+            vel_dist = float(np.linalg.norm(velocity_matrix[vel_start_idx] - velocity_matrix[vel_end_idx]))
+            shoulder_dist = float(
+                np.linalg.norm(
+                    feature_matrix[start][15:21] - feature_matrix[end][15:21]
+                )
+            )
+            score = pose_dist + vel_dist * 0.35 + shoulder_dist * 0.15
+            score -= (length / max(frame_count, 1)) * 0.08
+            if best is None or score < best[0]:
+                best = (score, start, end, pose_dist, vel_dist, shoulder_dist)
+
+    if best is None:
+        return None
+    score, start, end, pose_dist, vel_dist, shoulder_dist = best
+    length = end - start + 1
+    return {
+        "score": float(score),
+        "start": float(start),
+        "end": float(end),
+        "length": float(length),
+        "coverage": float(length / max(frame_count, 1)),
+        "pose_dist": float(pose_dist),
+        "vel_dist": float(vel_dist),
+        "shoulder_dist": float(shoulder_dist),
+    }
+
+
+def analyze_motion_loopability(
+    frames_pts: List[Dict[str, np.ndarray]],
+    fps: float,
+) -> Dict[str, float | str]:
+    base_stats: Dict[str, float | str] = {
+        "label": "oneshot",
+        "score": 0.0,
+        "start": 0.0,
+        "end": float(max(0, len(frames_pts) - 1)),
+        "length": float(len(frames_pts)),
+        "coverage": 0.0,
+        "pose_dist": 0.0,
+        "vel_dist": 0.0,
+        "shoulder_dist": 0.0,
+        "full_pose_dist": 0.0,
+        "full_vel_dist": 0.0,
+    }
+    if len(frames_pts) < 12:
+        return base_stats
+
+    feature_matrix = np.stack([_loop_feature_vector(frame) for frame in frames_pts], axis=0)
+    velocity_matrix = np.zeros_like(feature_matrix)
+    velocity_matrix[1:] = feature_matrix[1:] - feature_matrix[:-1]
+    full_pose_dist = float(np.linalg.norm(feature_matrix[0] - feature_matrix[-1]))
+    full_vel_dist = float(np.linalg.norm(velocity_matrix[min(1, len(frames_pts) - 1)] - velocity_matrix[-1]))
+    best = _find_best_loop_window(feature_matrix, velocity_matrix, fps)
+    if best is None:
+        return {
+            **base_stats,
+            "full_pose_dist": full_pose_dist,
+            "full_vel_dist": full_vel_dist,
+        }
+
+    label = "cyclic"
+    if (
+        best["score"] > 0.95
+        or best["coverage"] < 0.7
+        or best["pose_dist"] > 0.85
+        or best["vel_dist"] > 1.1
+        or full_pose_dist > 1.15
+        or full_vel_dist > 1.35
+    ):
+        label = "oneshot"
+
+    return {
+        "label": label,
+        "full_pose_dist": full_pose_dist,
+        "full_vel_dist": full_vel_dist,
+        **best,
+    }
+
+
+def extract_motion_loop(
+    frames_pts: List[Dict[str, np.ndarray]],
+    fps: float,
+    mode: str = "off",
+) -> Tuple[List[Dict[str, np.ndarray]], Dict[str, float]]:
+    normalized_mode = str(mode or "off").strip().lower()
+    base_stats = {
+        "applied": 0.0,
+        "start": 0.0,
+        "end": float(max(0, len(frames_pts) - 1)),
+        "score": 0.0,
+        "length": float(len(frames_pts)),
+    }
+    if normalized_mode == "off" or len(frames_pts) < 12:
+        return frames_pts, base_stats
+
+    feature_matrix = np.stack([_loop_feature_vector(frame) for frame in frames_pts], axis=0)
+    velocity_matrix = np.zeros_like(feature_matrix)
+    if len(frames_pts) >= 2:
+        velocity_matrix[1:] = feature_matrix[1:] - feature_matrix[:-1]
+
+    best = _find_best_loop_window(feature_matrix, velocity_matrix, fps)
+    if best is None:
+        return frames_pts, base_stats
+
+    best_score = float(best["score"])
+    best_start = int(best["start"])
+    best_end = int(best["end"])
+    max_reasonable_score = 1.25
+    if normalized_mode == "auto":
+        loopability = analyze_motion_loopability(frames_pts, fps)
+        if str(loopability["label"]) != "cyclic":
+            return frames_pts, {
+                **base_stats,
+                "score": float(loopability["score"]),
+                "start": float(loopability["start"]),
+                "end": float(loopability["end"]),
+                "length": float(loopability["length"]),
+            }
+    if not np.isfinite(best_score) or best_score > max_reasonable_score:
+        return frames_pts, {**base_stats, "score": float(best_score)}
+
+    trimmed = [_copy_pose_frame(frame) for frame in frames_pts[best_start : best_end + 1]]
+    return trimmed, {
+        "applied": 1.0,
+        "start": float(best_start),
+        "end": float(best_end),
+        "score": float(best_score),
+        "length": float(len(trimmed)),
+    }
+
+
+def blend_motion_loop_edges(
+    frames_pts: List[Dict[str, np.ndarray]],
+    fps: float,
+    mode: str = "off",
+) -> Tuple[List[Dict[str, np.ndarray]], Dict[str, float]]:
+    normalized_mode = str(mode or "off").strip().lower()
+    base_stats = {
+        "applied": 0.0,
+        "blend_frames": 0.0,
+        "score_before": 0.0,
+        "score_after": 0.0,
+    }
+    if normalized_mode == "off" or len(frames_pts) < 10:
+        return frames_pts, base_stats
+
+    feature_start = _loop_feature_vector(frames_pts[0])
+    feature_end = _loop_feature_vector(frames_pts[-1])
+    score_before = float(np.linalg.norm(feature_start - feature_end))
+
+    blend_frames = min(max(2, int(round(max(float(fps), 1.0) * 0.12))), max(2, len(frames_pts) // 4))
+    if blend_frames * 2 > len(frames_pts):
+        return frames_pts, {**base_stats, "score_before": score_before}
+
+    adjusted = [_copy_pose_frame(frame) for frame in frames_pts]
+    keys = list(adjusted[0].keys())
+    for i in range(blend_frames):
+        pair_idx = len(adjusted) - blend_frames + i
+        edge_weight = 1.0 - (i / max(blend_frames - 1, 1))
+        pair_strength = edge_weight * 0.85
+        for key in keys:
+            start_vec = np.array(adjusted[i][key], dtype=np.float64)
+            end_vec = np.array(adjusted[pair_idx][key], dtype=np.float64)
+            midpoint = (start_vec + end_vec) * 0.5
+            adjusted[i][key] = start_vec * (1.0 - pair_strength) + midpoint * pair_strength
+            adjusted[pair_idx][key] = end_vec * (1.0 - pair_strength) + midpoint * pair_strength
+
+    score_after = float(np.linalg.norm(_loop_feature_vector(adjusted[0]) - _loop_feature_vector(adjusted[-1])))
+    return adjusted, {
+        "applied": 1.0 if score_after < score_before - 1e-6 else 0.0,
+        "blend_frames": float(blend_frames),
+        "score_before": score_before,
+        "score_after": score_after,
     }
 
 
@@ -681,6 +1199,68 @@ def apply_manual_root_yaw_offset(
             updated[5] = _wrap_angle_deg(updated[5] + float(offset_deg))
         adjusted.append(updated)
     return adjusted
+
+
+def unwrap_motion_rotation_channels(
+    motion_values: List[List[float]],
+) -> Tuple[List[List[float]], Dict[str, float]]:
+    if not motion_values:
+        return motion_values, {
+            "applied": 0.0,
+            "changed_values": 0.0,
+            "max_step_before": 0.0,
+            "max_step_after": 0.0,
+        }
+
+    adjusted: List[List[float]] = [list(frame) for frame in motion_values]
+    rotation_indices: List[int] = []
+    channel_index = 0
+    for joint in JOINTS:
+        if joint.channels == 6:
+            rotation_indices.extend([channel_index + 3, channel_index + 4, channel_index + 5])
+            channel_index += 6
+        elif joint.channels == 3:
+            rotation_indices.extend([channel_index, channel_index + 1, channel_index + 2])
+            channel_index += 3
+
+    changed_values = 0
+    max_step_before = 0.0
+    max_step_after = 0.0
+    for channel_idx in rotation_indices:
+        prev_value = None
+        for frame_idx, frame in enumerate(adjusted):
+            if channel_idx >= len(frame):
+                break
+            value = frame[channel_idx]
+            if not np.isfinite(value):
+                continue
+            if prev_value is None:
+                prev_value = float(value)
+                continue
+
+            value_before = float(value)
+            step_before = abs(value_before - prev_value)
+            max_step_before = max(max_step_before, step_before)
+
+            value_after = value_before
+            while value_after - prev_value > 180.0:
+                value_after -= 360.0
+            while value_after - prev_value < -180.0:
+                value_after += 360.0
+
+            step_after = abs(value_after - prev_value)
+            max_step_after = max(max_step_after, step_after)
+            if abs(value_after - value_before) > 1e-6:
+                adjusted[frame_idx][channel_idx] = value_after
+                changed_values += 1
+            prev_value = float(adjusted[frame_idx][channel_idx])
+
+    return adjusted, {
+        "applied": 1.0 if changed_values > 0 else 0.0,
+        "changed_values": float(changed_values),
+        "max_step_before": float(max_step_before),
+        "max_step_after": float(max_step_after),
+    }
 
 
 def apply_lower_body_rotation_mode(
@@ -1477,17 +2057,25 @@ def preprocess_video_frame(
     return processed
 
 
+def _first_landmark_list(payload):
+    if payload is None:
+        return None
+    if isinstance(payload, (list, tuple)):
+        return payload[0] if payload else None
+    if hasattr(payload, "landmark"):
+        return payload.landmark
+    return None
+
+
 def extract_pose_bbox_pixels(res, frame_w: int, frame_h: int) -> Optional[Tuple[float, float, float, float]]:
     if frame_w <= 0 or frame_h <= 0:
         return None
-    if not getattr(res, "pose_landmarks", None):
-        return None
-    if not res.pose_landmarks:
+    landmarks = _first_landmark_list(getattr(res, "pose_landmarks", None))
+    if landmarks is None:
         return None
 
     xs: List[float] = []
     ys: List[float] = []
-    landmarks = res.pose_landmarks[0]
     for lm in landmarks:
         x = getattr(lm, "x", None)
         y = getattr(lm, "y", None)
@@ -1517,6 +2105,77 @@ def extract_pose_bbox_pixels(res, frame_w: int, frame_h: int) -> Optional[Tuple[
     if max_x - min_x < 2.0 or max_y - min_y < 2.0:
         return None
     return (min_x, min_y, max_x, max_y)
+
+
+def _should_fallback_to_legacy_pose(exc: Exception) -> bool:
+    text = str(exc)
+    return any(
+        token in text
+        for token in (
+            "NSOpenGLPixelFormat",
+            "kGpuService",
+            "gl_context_nsgl",
+            "Could not create an NSOpenGLPixelFormat",
+        )
+    )
+
+
+def _create_pose_detector(
+    model_complexity: int,
+    min_detection_confidence: float,
+    min_tracking_confidence: float,
+    cv2,
+) -> Tuple[Callable[[np.ndarray, int], Any], Callable[[], None], str]:
+    import mediapipe as mp
+
+    try:
+        from mediapipe.tasks import python as mp_tasks_python
+        from mediapipe.tasks.python import vision as mp_vision
+
+        model_path = ensure_pose_model(model_complexity)
+        options = mp_vision.PoseLandmarkerOptions(
+            base_options=mp_tasks_python.BaseOptions(
+                model_asset_path=str(model_path),
+                delegate=mp_tasks_python.BaseOptions.Delegate.CPU,
+            ),
+            running_mode=mp_vision.RunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=min_detection_confidence,
+            min_pose_presence_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+            output_segmentation_masks=False,
+        )
+        pose = mp_vision.PoseLandmarker.create_from_options(options)
+
+        def detect_pose(frame_bgr: np.ndarray, ts_ms: int):
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            return pose.detect_for_video(mp_image, ts_ms)
+
+        return detect_pose, pose.close, "tasks"
+    except Exception as exc:
+        if not _should_fallback_to_legacy_pose(exc):
+            raise
+        print(
+            f"[vid2model] pose_backend tasks failed, falling back to mediapipe.solutions.pose: {exc}",
+            file=sys.stderr,
+        )
+
+    pose = mp.solutions.pose.Pose(
+        static_image_mode=False,
+        model_complexity=max(0, min(int(model_complexity), 2)),
+        smooth_landmarks=True,
+        enable_segmentation=False,
+        min_detection_confidence=min_detection_confidence,
+        min_tracking_confidence=min_tracking_confidence,
+    )
+
+    def detect_pose(frame_bgr: np.ndarray, ts_ms: int):
+        del ts_ms
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        return pose.process(rgb)
+
+    return detect_pose, pose.close, "solutions"
 
 
 def clamp_roi_box(
@@ -1595,11 +2254,8 @@ def collect_detected_pose_samples(
     opencv_enhance: str = "off",
     max_frame_side: int = 0,
     roi_crop: str = "off",
-) -> Tuple[float, List[Optional[Dict[str, np.ndarray]]], List[Dict[str, np.ndarray]], Dict[str, int]]:
+) -> Tuple[float, List[Optional[Dict[str, np.ndarray]]], List[Dict[str, np.ndarray]], Dict[str, Any]]:
     import cv2
-    import mediapipe as mp
-    from mediapipe.tasks import python as mp_tasks_python
-    from mediapipe.tasks.python import vision as mp_vision
 
     opencv_enhance = str(opencv_enhance).strip().lower()
     if opencv_enhance not in {"off", "light", "strong"}:
@@ -1618,20 +2274,13 @@ def collect_detected_pose_samples(
     if not fps or fps <= 1e-6:
         fps = 30.0
 
-    model_path = ensure_pose_model(model_complexity)
-    options = mp_vision.PoseLandmarkerOptions(
-        base_options=mp_tasks_python.BaseOptions(
-            model_asset_path=str(model_path),
-            delegate=mp_tasks_python.BaseOptions.Delegate.CPU,
-        ),
-        running_mode=mp_vision.RunningMode.VIDEO,
-        num_poses=1,
-        min_pose_detection_confidence=min_detection_confidence,
-        min_pose_presence_confidence=min_detection_confidence,
+    detect_pose, close_pose, pose_backend = _create_pose_detector(
+        model_complexity=model_complexity,
+        min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
-        output_segmentation_masks=False,
+        cv2=cv2,
     )
-    pose = mp_vision.PoseLandmarker.create_from_options(options)
+    print(f"[vid2model] pose_backend={pose_backend}", file=sys.stderr)
 
     frames_pts_raw: List[Optional[Dict[str, np.ndarray]]] = []
     detected_samples: List[Dict[str, np.ndarray]] = []
@@ -1647,11 +2296,6 @@ def collect_detected_pose_samples(
         )
     if roi_crop == "auto":
         print("[vid2model] roi_crop mode=auto", file=sys.stderr)
-
-    def detect_pose(frame_bgr: np.ndarray, ts_ms: int):
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        return pose.detect_for_video(mp_image, ts_ms)
 
     frame_idx = 0
     while True:
@@ -1715,7 +2359,7 @@ def collect_detected_pose_samples(
             )
 
     cap.release()
-    pose.close()
+    close_pose()
 
     if roi_crop == "auto":
         print(
@@ -1732,6 +2376,7 @@ def collect_detected_pose_samples(
         "roi_used": roi_used_count,
         "roi_fallback": roi_fallback_count,
         "roi_resets": roi_reset_count,
+        "pose_backend": pose_backend,
     }
     return fps, frames_pts_raw, detected_samples, stats
 
@@ -1749,7 +2394,8 @@ def convert_video_to_bvh(
     pose_corrections: Optional[PoseCorrectionProfile] = None,
     root_yaw_offset_deg: float = 0.0,
     lower_body_rotation_mode: str = "off",
-) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]]]:
+    loop_mode: str = "off",
+) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]], Dict[str, Any]]:
     fps, frames_pts_raw, detected_samples, scan_stats = collect_detected_pose_samples(
         input_path=input_path,
         model_complexity=model_complexity,
@@ -1764,6 +2410,7 @@ def convert_video_to_bvh(
     roi_used_count = scan_stats["roi_used"]
     roi_fallback_count = scan_stats["roi_fallback"]
     roi_reset_count = scan_stats["roi_resets"]
+    pose_backend = str(scan_stats.get("pose_backend", "unknown"))
 
     frames_pts, interpolated_frames, carried_frames = fill_pose_gaps(frames_pts_raw, max_gap_interpolate)
     print(
@@ -1792,16 +2439,81 @@ def convert_video_to_bvh(
     ]
     frames_pts = [_apply_pose_corrections(pts, corrections) for pts in frames_pts]
     canonical_anchor_samples = [_apply_pose_corrections(sample, corrections) for sample in canonical_anchor_samples]
-    frames_pts, cleanup_stats = cleanup_pose_frames(frames_pts, canonical_anchor_samples)
-    canonical_anchor_samples, _ = cleanup_pose_frames(canonical_anchor_samples, canonical_anchor_samples)
+    pre_cleanup_loopability: Dict[str, Any] = {}
+    contact_cleanup_enabled = True
+    if len(frames_pts) >= 12:
+        preview_smoothed = _smooth_pose_frames(frames_pts, alpha=0.35)
+        preview_target_lengths = _build_target_segment_lengths(canonical_anchor_samples or preview_smoothed[:20])
+        preview_constrained = [
+            _apply_segment_length_constraints(frame, preview_target_lengths) for frame in preview_smoothed
+        ]
+        pre_cleanup_loopability = analyze_motion_loopability(preview_constrained, fps)
+        if str(pre_cleanup_loopability.get("label", "oneshot")) == "oneshot":
+            contact_cleanup_enabled = False
+        print(
+            (
+                f"[vid2model] cleanup_mode contact={'on' if contact_cleanup_enabled else 'off'} "
+                f"motion={str(pre_cleanup_loopability.get('label', 'unknown'))} "
+                f"score={float(pre_cleanup_loopability.get('score', 0.0)):.3f}"
+            ),
+            file=sys.stderr,
+        )
+    frames_pts, cleanup_stats = cleanup_pose_frames(
+        frames_pts,
+        canonical_anchor_samples,
+        use_contact_cleanup=contact_cleanup_enabled,
+    )
+    canonical_anchor_samples, _ = cleanup_pose_frames(
+        canonical_anchor_samples,
+        canonical_anchor_samples,
+        use_contact_cleanup=False,
+    )
     print(
         (
             f"[vid2model] source_cleanup side_swaps={int(cleanup_stats['side_swaps'])} "
             f"smooth_alpha={cleanup_stats['smooth_alpha']:.2f} "
-            f"segments={int(cleanup_stats['length_constraints'])}"
+            f"segments={int(cleanup_stats['length_constraints'])} "
+            f"foot_contacts={int(cleanup_stats['contact_windows'])}/{int(cleanup_stats['contact_frames'])} "
+            f"pelvis_frames={int(cleanup_stats['pelvis_contact_frames'])} "
+            f"leg_ik_frames={int(cleanup_stats['leg_ik_frames'])}"
         ),
         file=sys.stderr,
     )
+    loopability: Dict[str, Any] = {}
+    if str(loop_mode or "off").strip().lower() == "auto":
+        loopability = analyze_motion_loopability(frames_pts, fps)
+        print(
+            (
+                f"[vid2model] loop_detect label={str(loopability['label'])} "
+                f"score={float(loopability['score']):.3f} "
+                f"coverage={float(loopability['coverage']):.2f}"
+            ),
+            file=sys.stderr,
+        )
+    frames_pts, loop_stats = extract_motion_loop(frames_pts, fps, loop_mode)
+    if loop_stats["applied"] > 0.5:
+        canonical_anchor_samples = frames_pts[: min(len(frames_pts), 20)]
+        print(
+            (
+                f"[vid2model] loop_extract start={int(loop_stats['start'])} "
+                f"end={int(loop_stats['end'])} "
+                f"frames={int(loop_stats['length'])} "
+                f"score={loop_stats['score']:.3f}"
+            ),
+            file=sys.stderr,
+        )
+        frames_pts, blend_stats = blend_motion_loop_edges(frames_pts, fps, loop_mode)
+        if blend_stats["applied"] > 0.5:
+            canonical_anchor_samples = frames_pts[: min(len(frames_pts), 20)]
+            print(
+                (
+                    f"[vid2model] loop_blend frames={int(blend_stats['blend_frames'])} "
+                    f"score_before={blend_stats['score_before']:.3f} "
+                    f"score_after={blend_stats['score_after']:.3f}"
+                ),
+                file=sys.stderr,
+            )
+
     rest_offsets = build_rest_offsets(canonical_anchor_samples)
     root_point_name = MAP_TO_POINTS[JOINTS[0].name][0]
     ref_root = frames_pts[0][root_point_name].copy()
@@ -1824,5 +2536,45 @@ def convert_video_to_bvh(
     if str(lower_body_rotation_mode or "off").strip().lower() != "off":
         motion_values = apply_lower_body_rotation_mode(motion_values, lower_body_rotation_mode)
         print(f"[vid2model] lower_body_rotation mode={str(lower_body_rotation_mode).strip().lower()}", file=sys.stderr)
+    motion_values, unwrap_stats = unwrap_motion_rotation_channels(motion_values)
+    if unwrap_stats["applied"] > 0.5:
+        print(
+            (
+                f"[vid2model] rotation_unwrap changed={int(unwrap_stats['changed_values'])} "
+                f"max_step_before={unwrap_stats['max_step_before']:.1f} "
+                f"max_step_after={unwrap_stats['max_step_after']:.1f}"
+            ),
+            file=sys.stderr,
+        )
 
-    return fps, rest_offsets, motion_values, ref_root, frames_pts
+    diagnostics: Dict[str, Any] = {
+        "input": {
+            "fps": float(fps),
+            "source_frame_count": int(len(frames_pts_raw)),
+            "detected_frames": int(detected_count),
+            "interpolated_frames": int(interpolated_frames),
+            "carried_frames": int(carried_frames),
+            "roi_used": int(roi_used_count),
+            "roi_fallback": int(roi_fallback_count),
+            "roi_resets": int(roi_reset_count),
+            "pose_backend": pose_backend,
+        },
+        "cleanup": {key: float(value) for key, value in cleanup_stats.items()},
+        "root_yaw": {
+            "normalized_applied": float(yaw_norm_stats["applied"]),
+            "normalized_offset_deg": float(yaw_norm_stats["offset_deg"]),
+            "manual_offset_deg": float(root_yaw_offset_deg),
+        },
+        "rotation_unwrap": {key: float(value) for key, value in unwrap_stats.items()},
+        "loop": {
+            "mode": str(loop_mode or "off"),
+            "pre_cleanup_detected": pre_cleanup_loopability,
+            "detected": loopability,
+            "extracted": {key: float(value) for key, value in loop_stats.items()},
+        },
+        "output": {
+            "frame_count": int(len(motion_values)),
+        },
+    }
+
+    return fps, rest_offsets, motion_values, ref_root, frames_pts, diagnostics

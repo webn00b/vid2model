@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .pipeline import build_pose_correction_profile, convert_video_to_bvh
-from .writers import write_bvh, write_csv, write_json, write_npz, write_trc
+from .writers import write_bvh, write_csv, write_diagnostic_json, write_json, write_npz, write_trc
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-csv", help="Path to output CSV file (frame channels).")
     parser.add_argument("--output-npz", help="Path to output NPZ file (compressed arrays).")
     parser.add_argument("--output-trc", help="Path to output TRC file (marker trajectories).")
+    parser.add_argument("--output-diag-json", help="Path to output diagnostic JSON file.")
     parser.add_argument("--model-complexity", type=int, choices=[0, 1, 2])
     parser.add_argument("--min-detection-confidence", type=float)
     parser.add_argument("--min-tracking-confidence", type=float)
@@ -47,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         "--lower-body-rotation-mode",
         choices=["off", "invert", "yaw180"],
         help="Optional lower-body source rotation correction.",
+    )
+    parser.add_argument(
+        "--loop-mode",
+        choices=["off", "auto", "force"],
+        help="Optional loop extraction for cyclic clips.",
     )
     parser.add_argument("--check-tools", action="store_true", help="Validate local toolchain and exit.")
     return parser.parse_args()
@@ -119,6 +125,7 @@ def main() -> int:
     output_csv_value = merged("output_csv", None)
     output_npz_value = merged("output_npz", None)
     output_trc_value = merged("output_trc", None)
+    output_diag_json_value = merged("output_diag_json", None)
     model_complexity = int(merged("model_complexity", 1))
     min_detection_confidence = float(merged("min_detection_confidence", 0.5))
     min_tracking_confidence = float(merged("min_tracking_confidence", 0.5))
@@ -129,6 +136,7 @@ def main() -> int:
     progress_every = int(merged("progress_every", 100))
     root_yaw_offset_deg = float(merged("root_yaw_offset_deg", 0.0))
     lower_body_rotation_mode = str(merged("lower_body_rotation_mode", "off")).strip().lower()
+    loop_mode = str(merged("loop_mode", "off")).strip().lower()
     pose_corrections = build_pose_correction_profile(cfg.get("pose_corrections"))
 
     if model_complexity not in (0, 1, 2):
@@ -149,6 +157,8 @@ def main() -> int:
         raise ValueError("progress_every must be >= 0")
     if lower_body_rotation_mode not in ("off", "invert", "yaw180"):
         raise ValueError("lower_body_rotation_mode must be one of: off, invert, yaw180")
+    if loop_mode not in ("off", "auto", "force"):
+        raise ValueError("loop_mode must be one of: off, auto, force")
 
     if not input_value:
         raise ValueError("Specify --input (or use --check-tools).")
@@ -159,6 +169,7 @@ def main() -> int:
     output_csv = Path(output_csv_value).expanduser().resolve() if output_csv_value else None
     output_npz = Path(output_npz_value).expanduser().resolve() if output_npz_value else None
     output_trc = Path(output_trc_value).expanduser().resolve() if output_trc_value else None
+    output_diag_json = Path(output_diag_json_value).expanduser().resolve() if output_diag_json_value else None
 
     if output_value:
         if output_bvh is not None:
@@ -174,12 +185,13 @@ def main() -> int:
         and output_csv is None
         and output_npz is None
         and output_trc is None
+        and output_diag_json is None
     ):
         raise ValueError(
-            "Specify at least one target: --output-bvh, --output-json, --output-csv, --output-npz, --output-trc (or --output)."
+            "Specify at least one target: --output-bvh, --output-json, --output-csv, --output-npz, --output-trc, --output-diag-json (or --output)."
         )
 
-    fps, rest_offsets, motion_values, ref_root, frames_pts = convert_video_to_bvh(
+    fps, rest_offsets, motion_values, ref_root, frames_pts, diagnostics = convert_video_to_bvh(
         input_path=input_path,
         model_complexity=model_complexity,
         min_detection_confidence=min_detection_confidence,
@@ -192,6 +204,7 @@ def main() -> int:
         pose_corrections=pose_corrections,
         root_yaw_offset_deg=root_yaw_offset_deg,
         lower_body_rotation_mode=lower_body_rotation_mode,
+        loop_mode=loop_mode,
     )
 
     if output_bvh is not None:
@@ -209,5 +222,8 @@ def main() -> int:
     if output_trc is not None:
         write_trc(output_trc, input_path, fps, frames_pts, ref_root)
         print(f"Saved TRC: {output_trc}")
+    if output_diag_json is not None:
+        write_diagnostic_json(output_diag_json, diagnostics)
+        print(f"Saved diagnostic JSON: {output_diag_json}")
 
     return 0

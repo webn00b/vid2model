@@ -160,6 +160,49 @@ export function buildStageSourceClip(sourceClip, sourceBones, stage, canonicalFi
   return new THREE.AnimationClip(`${sourceClip.name || "retarget"}_${stage}`, sourceClip.duration, tracks);
 }
 
+export function scaleClipRotationsByCanonical(sourceClip, sourceBones, rotationScaleByCanonical) {
+  if (!sourceClip) return null;
+  if (!rotationScaleByCanonical || typeof rotationScaleByCanonical !== "object") return sourceClip;
+  const sourceCanonicalByName = new Map();
+  for (const bone of sourceBones || []) {
+    sourceCanonicalByName.set(bone.name, canonicalBoneKey(bone.name) || "");
+  }
+  const identityQ = new THREE.Quaternion();
+  const rawScale = Object.fromEntries(
+    Object.entries(rotationScaleByCanonical).filter(([, value]) => Number.isFinite(value))
+  );
+  if (!Object.keys(rawScale).length) return sourceClip;
+
+  const tracks = [];
+  for (const track of sourceClip.tracks || []) {
+    const parsed = parseTrackName(track.name);
+    if (!parsed || parsed.property !== "quaternion") {
+      tracks.push(track.clone());
+      continue;
+    }
+    const canonical = sourceCanonicalByName.get(parsed.bone) || "";
+    const scale = Number(rawScale[canonical]);
+    if (!Number.isFinite(scale) || Math.abs(scale - 1) < 1e-6) {
+      tracks.push(track.clone());
+      continue;
+    }
+    const clampedScale = Math.max(0, scale);
+    const cloned = track.clone();
+    const values = cloned.values.slice();
+    for (let i = 0; i + 3 < values.length; i += 4) {
+      const q = new THREE.Quaternion(values[i], values[i + 1], values[i + 2], values[i + 3]).normalize();
+      q.slerp(identityQ, 1 - clampedScale).normalize();
+      values[i] = q.x;
+      values[i + 1] = q.y;
+      values[i + 2] = q.z;
+      values[i + 3] = q.w;
+    }
+    cloned.values = values;
+    tracks.push(cloned);
+  }
+  return new THREE.AnimationClip(`${sourceClip.name || "retarget"}_scaled`, sourceClip.duration, tracks);
+}
+
 export function attemptPriority(label) {
   if (label === "skeletonutils-skinnedmesh") return 40;
   if (label === "skeletonutils-skinnedmesh-reversed") return 30;

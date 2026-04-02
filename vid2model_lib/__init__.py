@@ -10,7 +10,7 @@ from .pipeline import (
 from .pose_model import MODEL_URLS, ensure_pose_model
 from .pose_points import LM, extract_pose_points
 from .skeleton import CHILDREN, JOINTS, MAP_TO_POINTS, JointDef
-from .writers import channel_headers, write_bvh, write_csv, write_json, write_npz, write_trc
+from .writers import channel_headers, write_bvh, write_csv, write_diagnostic_json, write_json, write_npz, write_trc
 
 __all__ = [
     "CHILDREN",
@@ -35,6 +35,7 @@ __all__ = [
     "rotation_align",
     "write_bvh",
     "write_csv",
+    "write_diagnostic_json",
     "write_json",
     "write_npz",
     "write_trc",

@@ -32,6 +32,16 @@ LM = {
 }
 
 
+def _first_landmark_list(payload):
+    if payload is None:
+        return None
+    if isinstance(payload, (list, tuple)):
+        return payload[0] if payload else None
+    if hasattr(payload, "landmark"):
+        return payload.landmark
+    return None
+
+
 def _safe_normalized(vec: np.ndarray, fallback: np.ndarray) -> np.ndarray:
     vec_norm = np.linalg.norm(vec)
     if vec_norm > 1e-8:
@@ -110,25 +120,21 @@ def _build_hand_points(side: str, pts: Dict[str, np.ndarray]) -> Dict[str, np.nd
 
 
 def extract_pose_points(res) -> Optional[Dict[str, np.ndarray]]:
-    # MediaPipe Tasks returns a list of poses; we use the first detected one.
-    if getattr(res, "pose_world_landmarks", None):
-        if not res.pose_world_landmarks:
-            return None
-        world_landmarks = res.pose_world_landmarks[0]
+    # MediaPipe Tasks returns a list of poses; mediapipe.solutions.pose returns
+    # a NormalizedLandmarkList / LandmarkList object directly.
+    world_landmarks = _first_landmark_list(getattr(res, "pose_world_landmarks", None))
+    if world_landmarks is not None:
 
         def point(idx: int) -> np.ndarray:
             return np.array([world_landmarks[idx].x, -world_landmarks[idx].y, -world_landmarks[idx].z], dtype=np.float64)
 
-    elif getattr(res, "pose_landmarks", None):
-        if not res.pose_landmarks:
+    else:
+        landmarks = _first_landmark_list(getattr(res, "pose_landmarks", None))
+        if landmarks is None:
             return None
-        landmarks = res.pose_landmarks[0]
 
         def point(idx: int) -> np.ndarray:
             return np.array([landmarks[idx].x - 0.5, -(landmarks[idx].y - 0.5), -landmarks[idx].z], dtype=np.float64)
-
-    else:
-        return None
 
     pts = {
         "left_shoulder": point(LM["left_shoulder"]),

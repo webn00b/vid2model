@@ -5,12 +5,13 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$ROOT_DIR/.venv"
 PYTHON_BIN="${PYTHON_BIN:-}"
 MIN_PYTHON_MINOR=10
-MAX_PYTHON_MINOR=12
+MAX_PYTHON_MINOR=10
 OPENCV_ENHANCE="${OPENCV_ENHANCE:-off}"
 MAX_FRAME_SIDE="${MAX_FRAME_SIDE:-0}"
 ROI_CROP="${ROI_CROP:-off}"
 ROOT_YAW_OFFSET_DEG="${ROOT_YAW_OFFSET_DEG:-0}"
 LOWER_BODY_ROTATION_MODE="${LOWER_BODY_ROTATION_MODE:-off}"
+LOOP_MODE="${LOOP_MODE:-off}"
 
 python_minor() {
   "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
@@ -37,7 +38,7 @@ select_python_bin() {
   if [[ -n "$PYTHON_BIN" ]]; then
     candidates+=("$PYTHON_BIN")
   fi
-  candidates+=(python3.12 python3.11 python3.10 python3)
+  candidates+=(python3.10 python3.12 python3.11 python3)
 
   local candidate
   for candidate in "${candidates[@]}"; do
@@ -50,8 +51,8 @@ select_python_bin() {
 }
 
 if ! select_python_bin; then
-  echo "No supported Python found (need 3.${MIN_PYTHON_MINOR}-3.${MAX_PYTHON_MINOR} for stable mediapipe wheels)." >&2
-  echo "Install Python 3.10/3.11/3.12 or set PYTHON_BIN explicitly to a supported interpreter." >&2
+  echo "No supported Python found (need Python 3.10 for the pinned mediapipe wheel)." >&2
+  echo "Install Python 3.10 or set PYTHON_BIN explicitly to a supported interpreter." >&2
   exit 2
 fi
 
@@ -82,6 +83,7 @@ Environment knobs:
   ROI_CROP=off|auto                 Adaptive person ROI crop between frames.
   ROOT_YAW_OFFSET_DEG=0|180|-90     Extra source root yaw offset in degrees.
   LOWER_BODY_ROTATION_MODE=off|invert|yaw180  Extra lower-body source rotation correction.
+  LOOP_MODE=off|auto|force          Extract a cyclic loop window from the cleaned motion.
 USAGE
 }
 
@@ -97,6 +99,7 @@ OUTPUT_CSV=""
 OUTPUT_NPZ=""
 OUTPUT_TRC=""
 OUTPUT_FBX=""
+OUTPUT_DIAG_JSON=""
 
 if [[ "$1" == "--auto" ]]; then
   shift
@@ -138,6 +141,7 @@ if [[ "$1" == "--auto" ]]; then
     OUTPUT_NPZ="$out_dir/$stem.npz"
     OUTPUT_TRC="$out_dir/$stem.trc"
   fi
+  OUTPUT_DIAG_JSON="$out_dir/$stem.diag.json"
   if [[ "$AUTO_FBX" -eq 1 ]]; then
     OUTPUT_FBX="$out_dir/$stem.fbx"
   fi
@@ -153,6 +157,9 @@ else
   OUTPUT_NPZ="${5:-}"
   OUTPUT_TRC="${6:-}"
   OUTPUT_FBX="${7:-}"
+  if [[ -n "$OUTPUT_BVH" ]]; then
+    OUTPUT_DIAG_JSON="${OUTPUT_BVH%.*}.diag.json"
+  fi
 fi
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
@@ -181,6 +188,9 @@ fi
 if [[ -n "$OUTPUT_TRC" ]]; then
   CMD+=(--output-trc "$OUTPUT_TRC")
 fi
+if [[ -n "$OUTPUT_DIAG_JSON" ]]; then
+  CMD+=(--output-diag-json "$OUTPUT_DIAG_JSON")
+fi
 if [[ -n "$OPENCV_ENHANCE" ]]; then
   CMD+=(--opencv-enhance "$OPENCV_ENHANCE")
 fi
@@ -195,6 +205,9 @@ if [[ -n "$ROOT_YAW_OFFSET_DEG" ]]; then
 fi
 if [[ -n "$LOWER_BODY_ROTATION_MODE" ]]; then
   CMD+=(--lower-body-rotation-mode "$LOWER_BODY_ROTATION_MODE")
+fi
+if [[ -n "$LOOP_MODE" ]]; then
+  CMD+=(--loop-mode "$LOOP_MODE")
 fi
 
 "${CMD[@]}"

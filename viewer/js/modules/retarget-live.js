@@ -40,6 +40,30 @@ const NO_CACHE_REST_CALIBRATION_CANONICAL = new Set([
 const _worldTransferQ1 = new THREE.Quaternion();
 const _worldTransferQ2 = new THREE.Quaternion();
 const _worldTransferQ3 = new THREE.Quaternion();
+const _legPlaneV1 = new THREE.Vector3();
+const _legPlaneV2 = new THREE.Vector3();
+const _legPlaneV3 = new THREE.Vector3();
+const _legPlaneV4 = new THREE.Vector3();
+const _legPlaneV5 = new THREE.Vector3();
+const _legPlaneV6 = new THREE.Vector3();
+const _legPlaneV7 = new THREE.Vector3();
+const _legPlaneV8 = new THREE.Vector3();
+const _legPlaneV9 = new THREE.Vector3();
+const _legPlaneQ1 = new THREE.Quaternion();
+const _legPlaneQ2 = new THREE.Quaternion();
+const _legPlaneQ3 = new THREE.Quaternion();
+const _liveChildDirV1 = new THREE.Vector3();
+const _liveChildDirV2 = new THREE.Vector3();
+const _liveChildDirQ1 = new THREE.Quaternion();
+
+function pushFootDebug(entry) {
+  if (typeof window === "undefined") return;
+  const rows = Array.isArray(window.__vid2modelFootCorrectionDebug)
+    ? window.__vid2modelFootCorrectionDebug
+    : [];
+  rows.push(entry);
+  window.__vid2modelFootCorrectionDebug = rows;
+}
 
 function getBoneDepth(bone) {
   let depth = 0;
@@ -49,6 +73,51 @@ function getBoneDepth(bone) {
     node = node.parent || null;
   }
   return depth;
+}
+
+function getPrimaryChildDirectionLocal(bone) {
+  if (!bone?.isBone) return null;
+  bone.getWorldPosition(_liveChildDirV1);
+  let bestChild = null;
+  let bestLenSq = 0;
+  for (const child of bone.children || []) {
+    if (!child?.isBone) continue;
+    child.getWorldPosition(_liveChildDirV2);
+    const lenSq = _liveChildDirV2.distanceToSquared(_liveChildDirV1);
+    if (lenSq > bestLenSq) {
+      bestLenSq = lenSq;
+      bestChild = child;
+    }
+  }
+  if (!bestChild || bestLenSq < 1e-10) return null;
+  bestChild.getWorldPosition(_liveChildDirV2);
+  const dir = new THREE.Vector3().copy(_liveChildDirV2).sub(_liveChildDirV1);
+  bone.getWorldQuaternion(_liveChildDirQ1);
+  dir.applyQuaternion(_liveChildDirQ1.invert());
+  if (dir.lengthSq() < 1e-10) return null;
+  return dir.normalize();
+}
+
+function buildLegChainPairs(pairs, side) {
+  if (!Array.isArray(pairs) || !side) return null;
+  const byCanonical = new Map(pairs.map((pair) => [pair.canonical, pair]));
+  const upper = byCanonical.get(`${side}UpperLeg`) || null;
+  const lower = byCanonical.get(`${side}LowerLeg`) || null;
+  const foot = byCanonical.get(`${side}Foot`) || null;
+  const toes = byCanonical.get(`${side}Toes`) || null;
+  if (!upper || !lower || !foot) return null;
+  return {
+    side,
+    upper,
+    lower,
+    foot,
+    toes,
+    enableUpperLegDirectionCorrection: false,
+    enableShinDirectionCorrection: false,
+    enableFootDirectionCorrection: false,
+    enableFootPlaneCorrection: false,
+    enableFootMirrorCorrection: false,
+  };
 }
 
 function pairProfileKey(targetName, sourceName) {
@@ -69,6 +138,322 @@ function deserializeQuaternion(data, outQ) {
   if (!Array.isArray(data) || data.length !== 4 || !outQ) return false;
   if (!data.every((v) => Number.isFinite(v))) return false;
   outQ.set(data[0], data[1], data[2], data[3]).normalize();
+  return true;
+}
+
+function getBendNormal(startPos, midPos, endPos, outNormal) {
+  outNormal.copy(midPos).sub(startPos);
+  _legPlaneV8.copy(endPos).sub(midPos);
+  if (outNormal.lengthSq() < 1e-10 || _legPlaneV8.lengthSq() < 1e-10) return false;
+  outNormal.normalize();
+  _legPlaneV8.normalize();
+  outNormal.cross(_legPlaneV8);
+  if (outNormal.lengthSq() < 1e-10) return false;
+  outNormal.normalize();
+  return true;
+}
+
+function setBoneWorldQuaternion(bone, worldQ, parentWorldQ, localQ) {
+  if (!bone || !worldQ) return false;
+  if (bone.parent?.isBone) {
+    bone.parent.getWorldQuaternion(parentWorldQ);
+    bone.quaternion.copy(parentWorldQ.invert().multiply(worldQ)).normalize();
+  } else {
+    bone.quaternion.copy(worldQ).normalize();
+  }
+  return true;
+}
+
+function getPrimaryChildWorldDirection(bone, outDir) {
+  if (!bone || !outDir) return false;
+  bone.getWorldPosition(_legPlaneV1);
+  let bestChild = null;
+  let bestLenSq = 0;
+  for (const child of bone.children || []) {
+    if (!child?.isBone) continue;
+    child.getWorldPosition(_legPlaneV2);
+    const lenSq = _legPlaneV2.distanceToSquared(_legPlaneV1);
+    if (lenSq > bestLenSq) {
+      bestLenSq = lenSq;
+      bestChild = child;
+    }
+  }
+  if (!bestChild || bestLenSq < 1e-10) return false;
+  bestChild.getWorldPosition(_legPlaneV2);
+  outDir.copy(_legPlaneV2).sub(_legPlaneV1);
+  if (outDir.lengthSq() < 1e-10) return false;
+  outDir.normalize();
+  return true;
+}
+
+function getWorldDirectionFromLocal(bone, localDir, outDir) {
+  if (!bone || !localDir || !outDir) return false;
+  if (localDir.lengthSq() < 1e-10) return false;
+  bone.getWorldQuaternion(_legPlaneQ1);
+  outDir.copy(localDir).applyQuaternion(_legPlaneQ1);
+  if (outDir.lengthSq() < 1e-10) return false;
+  outDir.normalize();
+  return true;
+}
+
+function getFootForwardWorldDirection(footBone, toesBone, outDir, localDirHint = null) {
+  if (!footBone || !outDir) return false;
+  if (toesBone?.isBone) {
+    footBone.getWorldPosition(_legPlaneV1);
+    toesBone.getWorldPosition(_legPlaneV2);
+    outDir.copy(_legPlaneV2).sub(_legPlaneV1);
+    if (outDir.lengthSq() >= 1e-10) {
+      outDir.normalize();
+      return true;
+    }
+  }
+  if (getWorldDirectionFromLocal(footBone, localDirHint, outDir)) {
+    return true;
+  }
+  return getPrimaryChildWorldDirection(footBone, outDir);
+}
+
+function computeFootDot(chain) {
+  const footTarget = chain?.foot?.target || null;
+  const footSource = chain?.foot?.source || null;
+  const toesTarget = chain?.toes?.target || null;
+  const toesSource = chain?.toes?.source || null;
+  const targetLocalDir = chain?.foot?.targetPrimaryChildDirLocal || null;
+  const sourceLocalDir = chain?.foot?.sourcePrimaryChildDirLocal || null;
+  if (!footTarget || !footSource) return null;
+  const targetDir = _legPlaneV7;
+  const sourceDir = _legPlaneV8;
+  if (!getFootForwardWorldDirection(footTarget, toesTarget, targetDir, targetLocalDir)) return null;
+  if (!getFootForwardWorldDirection(footSource, toesSource, sourceDir, sourceLocalDir)) return null;
+  return Number(targetDir.dot(sourceDir).toFixed(4));
+}
+
+function applyUpperLegDirectionCorrection(chain) {
+  const upperTarget = chain?.upper?.target || null;
+  const lowerTarget = chain?.lower?.target || null;
+  const upperSource = chain?.upper?.source || null;
+  const lowerSource = chain?.lower?.source || null;
+  if (!upperTarget || !lowerTarget || !upperSource || !lowerSource) return false;
+
+  upperTarget.getWorldPosition(_legPlaneV1);
+  lowerTarget.getWorldPosition(_legPlaneV2);
+  upperSource.getWorldPosition(_legPlaneV3);
+  lowerSource.getWorldPosition(_legPlaneV4);
+
+  const targetDir = _legPlaneV5.subVectors(_legPlaneV2, _legPlaneV1);
+  const sourceDir = _legPlaneV6.subVectors(_legPlaneV4, _legPlaneV3);
+  if (targetDir.lengthSq() < 1e-10 || sourceDir.lengthSq() < 1e-10) return false;
+  targetDir.normalize();
+  sourceDir.normalize();
+
+  const dot = Math.max(-1, Math.min(1, targetDir.dot(sourceDir)));
+  if (dot > 0.9999) return false;
+  _legPlaneQ1.setFromUnitVectors(targetDir, sourceDir).normalize();
+  upperTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(upperTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  upperTarget.updateMatrixWorld(true);
+  return true;
+}
+
+function applyKneePlaneCorrection(chain) {
+  const upperTarget = chain?.upper?.target || null;
+  const lowerTarget = chain?.lower?.target || null;
+  const footTarget = chain?.foot?.target || null;
+  const upperSource = chain?.upper?.source || null;
+  const lowerSource = chain?.lower?.source || null;
+  const footSource = chain?.foot?.source || null;
+  if (!upperTarget || !lowerTarget || !footTarget || !upperSource || !lowerSource || !footSource) return false;
+
+  upperTarget.getWorldPosition(_legPlaneV1);
+  lowerTarget.getWorldPosition(_legPlaneV2);
+  footTarget.getWorldPosition(_legPlaneV3);
+  _legPlaneV9.copy(_legPlaneV3);
+  upperSource.getWorldPosition(_legPlaneV4);
+  lowerSource.getWorldPosition(_legPlaneV5);
+  footSource.getWorldPosition(_legPlaneV6);
+
+  const upperLen = _legPlaneV1.distanceTo(_legPlaneV2);
+  const lowerLen = _legPlaneV2.distanceTo(_legPlaneV3);
+  if (!(upperLen > 1e-5) || !(lowerLen > 1e-5)) return false;
+  if (!getBendNormal(_legPlaneV4, _legPlaneV5, _legPlaneV6, _legPlaneV7)) return false;
+
+  const rootToEnd = _legPlaneV6.copy(_legPlaneV3).sub(_legPlaneV1);
+  const dist = rootToEnd.length();
+  if (!(dist > 1e-5)) return false;
+  rootToEnd.multiplyScalar(1 / dist);
+
+  const planeNormal = _legPlaneV7.addScaledVector(rootToEnd, -_legPlaneV7.dot(rootToEnd));
+  if (planeNormal.lengthSq() < 1e-10) return false;
+  planeNormal.normalize();
+  const bendDir = _legPlaneV8.crossVectors(planeNormal, rootToEnd);
+  if (bendDir.lengthSq() < 1e-10) return false;
+  bendDir.normalize();
+
+  const clampedDist = Math.min(dist, upperLen + lowerLen - 1e-5);
+  const along = (clampedDist * clampedDist + upperLen * upperLen - lowerLen * lowerLen) / (2 * clampedDist);
+  const heightSq = Math.max(0, upperLen * upperLen - along * along);
+  const height = Math.sqrt(heightSq);
+
+  const kneeCandidateA = _legPlaneV4.copy(_legPlaneV1).addScaledVector(rootToEnd, along).addScaledVector(bendDir, height);
+  const kneeCandidateB = _legPlaneV5.copy(_legPlaneV1).addScaledVector(rootToEnd, along).addScaledVector(bendDir, -height);
+  const normalAOk = getBendNormal(_legPlaneV1, kneeCandidateA, _legPlaneV3, _legPlaneV6);
+  const dotA = normalAOk ? _legPlaneV6.dot(planeNormal) : -Infinity;
+  const normalBOk = getBendNormal(_legPlaneV1, kneeCandidateB, _legPlaneV3, _legPlaneV6);
+  const dotB = normalBOk ? _legPlaneV6.dot(planeNormal) : -Infinity;
+  const desiredKnee = dotA >= dotB ? kneeCandidateA.clone() : kneeCandidateB.clone();
+
+  const currentUpperDir = _legPlaneV2.subVectors(_legPlaneV2, _legPlaneV1);
+  const desiredUpperDir = _legPlaneV4.subVectors(desiredKnee, _legPlaneV1);
+  if (currentUpperDir.lengthSq() < 1e-10 || desiredUpperDir.lengthSq() < 1e-10) return false;
+  currentUpperDir.normalize();
+  desiredUpperDir.normalize();
+  _legPlaneQ1.setFromUnitVectors(currentUpperDir, desiredUpperDir).normalize();
+  upperTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(upperTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  upperTarget.updateMatrixWorld(true);
+
+  lowerTarget.getWorldPosition(_legPlaneV2);
+  footTarget.getWorldPosition(_legPlaneV3);
+  const currentLowerDir = _legPlaneV5.subVectors(_legPlaneV3, _legPlaneV2);
+  const desiredLowerDir = _legPlaneV6.subVectors(_legPlaneV9, _legPlaneV2);
+  if (currentLowerDir.lengthSq() < 1e-10 || desiredLowerDir.lengthSq() < 1e-10) return false;
+  currentLowerDir.normalize();
+  desiredLowerDir.normalize();
+  _legPlaneQ1.setFromUnitVectors(currentLowerDir, desiredLowerDir).normalize();
+  lowerTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(lowerTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  lowerTarget.updateMatrixWorld(true);
+  return true;
+}
+
+function applyShinDirectionCorrection(chain) {
+  const lowerTarget = chain?.lower?.target || null;
+  const footTarget = chain?.foot?.target || null;
+  const lowerSource = chain?.lower?.source || null;
+  const footSource = chain?.foot?.source || null;
+  if (!lowerTarget || !footTarget || !lowerSource || !footSource) return false;
+
+  lowerTarget.getWorldPosition(_legPlaneV1);
+  footTarget.getWorldPosition(_legPlaneV2);
+  lowerSource.getWorldPosition(_legPlaneV3);
+  footSource.getWorldPosition(_legPlaneV4);
+
+  const targetDir = _legPlaneV5.subVectors(_legPlaneV2, _legPlaneV1);
+  const sourceDir = _legPlaneV6.subVectors(_legPlaneV4, _legPlaneV3);
+  if (targetDir.lengthSq() < 1e-10 || sourceDir.lengthSq() < 1e-10) return false;
+  targetDir.normalize();
+  sourceDir.normalize();
+
+  const dot = Math.max(-1, Math.min(1, targetDir.dot(sourceDir)));
+  if (dot > 0.9999) return false;
+  _legPlaneQ1.setFromUnitVectors(targetDir, sourceDir).normalize();
+  lowerTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(lowerTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  lowerTarget.updateMatrixWorld(true);
+  return true;
+}
+
+function applyFootDirectionCorrection(chain) {
+  const footTarget = chain?.foot?.target || null;
+  const footSource = chain?.foot?.source || null;
+  const toesTarget = chain?.toes?.target || null;
+  const toesSource = chain?.toes?.source || null;
+  const targetLocalDir = chain?.foot?.targetPrimaryChildDirLocal || null;
+  const sourceLocalDir = chain?.foot?.sourcePrimaryChildDirLocal || null;
+  if (!footTarget || !footSource) return false;
+  const targetDir = _legPlaneV1;
+  const sourceDir = _legPlaneV2;
+  if (!getFootForwardWorldDirection(footTarget, toesTarget, targetDir, targetLocalDir)) return false;
+  if (!getFootForwardWorldDirection(footSource, toesSource, sourceDir, sourceLocalDir)) return false;
+  if (targetDir.lengthSq() < 1e-10 || sourceDir.lengthSq() < 1e-10) return false;
+  _legPlaneQ1.setFromUnitVectors(targetDir, sourceDir).normalize();
+  footTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(footTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  footTarget.updateMatrixWorld(true);
+  return true;
+}
+
+function applyFootPlaneCorrection(chain) {
+  const lowerTarget = chain?.lower?.target || null;
+  const footTarget = chain?.foot?.target || null;
+  const lowerSource = chain?.lower?.source || null;
+  const footSource = chain?.foot?.source || null;
+  const toesTarget = chain?.toes?.target || null;
+  const toesSource = chain?.toes?.source || null;
+  const targetLocalDir = chain?.foot?.targetPrimaryChildDirLocal || null;
+  const sourceLocalDir = chain?.foot?.sourcePrimaryChildDirLocal || null;
+  if (!lowerTarget || !footTarget || !lowerSource || !footSource) return false;
+
+  const targetFootDir = _legPlaneV1;
+  const sourceFootDir = _legPlaneV2;
+  if (!getFootForwardWorldDirection(footTarget, toesTarget, targetFootDir, targetLocalDir)) return false;
+  if (!getFootForwardWorldDirection(footSource, toesSource, sourceFootDir, sourceLocalDir)) return false;
+
+  lowerTarget.getWorldPosition(_legPlaneV3);
+  footTarget.getWorldPosition(_legPlaneV4);
+  lowerSource.getWorldPosition(_legPlaneV5);
+  footSource.getWorldPosition(_legPlaneV6);
+
+  const targetShinDir = _legPlaneV7.subVectors(_legPlaneV4, _legPlaneV3);
+  const sourceShinDir = _legPlaneV8.subVectors(_legPlaneV6, _legPlaneV5);
+  if (targetShinDir.lengthSq() < 1e-10 || sourceShinDir.lengthSq() < 1e-10) return false;
+  targetShinDir.normalize();
+  sourceShinDir.normalize();
+
+  const targetNormal = _legPlaneV9.crossVectors(targetShinDir, targetFootDir);
+  const sourceNormal = _legPlaneV3.crossVectors(sourceShinDir, sourceFootDir);
+  targetNormal.addScaledVector(targetFootDir, -targetNormal.dot(targetFootDir));
+  sourceNormal.addScaledVector(sourceFootDir, -sourceNormal.dot(sourceFootDir));
+  if (targetNormal.lengthSq() < 1e-10 || sourceNormal.lengthSq() < 1e-10) return false;
+  targetNormal.normalize();
+  sourceNormal.normalize();
+
+  const dot = Math.max(-1, Math.min(1, targetNormal.dot(sourceNormal)));
+  const angle = Math.acos(dot);
+  if (!(angle > 1e-5)) return false;
+  const sign = Math.sign(targetFootDir.dot(_legPlaneV4.crossVectors(targetNormal, sourceNormal))) || 1;
+  _legPlaneQ1.setFromAxisAngle(targetFootDir, angle * sign).normalize();
+  footTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(footTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  footTarget.updateMatrixWorld(true);
+  return true;
+}
+
+function applyFootMirrorCorrection(chain) {
+  const lowerTarget = chain?.lower?.target || null;
+  const footTarget = chain?.foot?.target || null;
+  const lowerSource = chain?.lower?.source || null;
+  const footSource = chain?.foot?.source || null;
+  const toesTarget = chain?.toes?.target || null;
+  const toesSource = chain?.toes?.source || null;
+  const targetLocalDir = chain?.foot?.targetPrimaryChildDirLocal || null;
+  const sourceLocalDir = chain?.foot?.sourcePrimaryChildDirLocal || null;
+  if (!lowerTarget || !footTarget || !lowerSource || !footSource) return false;
+
+  const targetFootDir = _legPlaneV1;
+  const sourceFootDir = _legPlaneV2;
+  if (!getFootForwardWorldDirection(footTarget, toesTarget, targetFootDir, targetLocalDir)) return false;
+  if (!getFootForwardWorldDirection(footSource, toesSource, sourceFootDir, sourceLocalDir)) return false;
+  const footDot = targetFootDir.dot(sourceFootDir);
+  if (!(footDot < 0)) return false;
+
+  lowerTarget.getWorldPosition(_legPlaneV3);
+  footTarget.getWorldPosition(_legPlaneV4);
+  const shinAxis = _legPlaneV5.subVectors(_legPlaneV4, _legPlaneV3);
+  if (shinAxis.lengthSq() < 1e-10) return false;
+  shinAxis.normalize();
+
+  _legPlaneQ1.setFromAxisAngle(shinAxis, Math.PI).normalize();
+  footTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(footTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  footTarget.updateMatrixWorld(true);
   return true;
 }
 
@@ -290,6 +675,7 @@ export function buildLiveRetargetPlan({
   modelRoot,
   buildRestOrientationCorrection,
   cachedProfile = null,
+  profile = null,
 }) {
   const sourceByName = new Map(sourceBones.map((b) => [b.name, b]));
   const cachedPairMap = new Map(
@@ -335,6 +721,8 @@ export function buildLiveRetargetPlan({
         hasRestCorrection: false,
         useParentRelativeRestDelta: false,
         useWorldRestTransfer: false,
+        targetPrimaryChildDirLocal: null,
+        sourcePrimaryChildDirLocal: null,
         isHips:
           canonicalBoneKey(targetBone.name) === "hips" ||
           canonicalBoneKey(sourceBone.name) === "hips",
@@ -369,6 +757,8 @@ export function buildLiveRetargetPlan({
         hasRestCorrection: false,
         useParentRelativeRestDelta: false,
         useWorldRestTransfer: false,
+        targetPrimaryChildDirLocal: null,
+        sourcePrimaryChildDirLocal: null,
         isHips:
           canonicalBoneKey(targetBone.name) === "hips" ||
           canonicalBoneKey(sourceBone.name) === "hips",
@@ -396,6 +786,8 @@ export function buildLiveRetargetPlan({
     pair.sourceRestWorldQInv.copy(pair.sourceRestWorldQ).invert();
     pair.targetRestPos.copy(pair.target.position);
     pair.sourceRestPos.copy(pair.source.position);
+    pair.targetPrimaryChildDirLocal = getPrimaryChildDirectionLocal(pair.target);
+    pair.sourcePrimaryChildDirLocal = getPrimaryChildDirectionLocal(pair.source);
   }
 
   let calibratedPairs = 0;
@@ -493,9 +885,34 @@ export function buildLiveRetargetPlan({
     yawOffset = cachedProfile.yawOffset;
   }
 
+  const legChains = [];
+  if (profile?.enableKneePlaneCorrectionBySide?.left) {
+    const leftChain = buildLegChainPairs(pairs, "left");
+    if (leftChain) {
+      leftChain.enableUpperLegDirectionCorrection = !!profile?.enableUpperLegDirectionCorrectionBySide?.left;
+      leftChain.enableShinDirectionCorrection = !!profile?.enableShinDirectionCorrectionBySide?.left;
+      leftChain.enableFootDirectionCorrection = !!profile?.enableFootDirectionCorrectionBySide?.left;
+      leftChain.enableFootPlaneCorrection = !!profile?.enableFootPlaneCorrectionBySide?.left;
+      leftChain.enableFootMirrorCorrection = !!profile?.enableFootMirrorCorrectionBySide?.left;
+      legChains.push(leftChain);
+    }
+  }
+  if (profile?.enableKneePlaneCorrectionBySide?.right) {
+    const rightChain = buildLegChainPairs(pairs, "right");
+    if (rightChain) {
+      rightChain.enableUpperLegDirectionCorrection = !!profile?.enableUpperLegDirectionCorrectionBySide?.right;
+      rightChain.enableShinDirectionCorrection = !!profile?.enableShinDirectionCorrectionBySide?.right;
+      rightChain.enableFootDirectionCorrection = !!profile?.enableFootDirectionCorrectionBySide?.right;
+      rightChain.enableFootPlaneCorrection = !!profile?.enableFootPlaneCorrectionBySide?.right;
+      rightChain.enableFootMirrorCorrection = !!profile?.enableFootMirrorCorrectionBySide?.right;
+      legChains.push(rightChain);
+    }
+  }
+
   return {
     pairs,
     uniqueSkeletons,
+    legChains,
     posScale,
     yawOffset,
     calibratedPairs,
@@ -542,7 +959,14 @@ export function applyLiveRetargetPose({
   if (Math.abs(yaw) > 1e-5) {
     yawQ.setFromAxisAngle(liveAxisY || new THREE.Vector3(0, 1, 0), yaw);
   }
+  if (typeof window !== "undefined") {
+    window.__vid2modelFootCorrectionDebug = [];
+  }
   for (const pair of plan.pairs) {
+    const pairInvertRotationDelta =
+      typeof pair.invertRotationDeltaOverride === "boolean"
+        ? pair.invertRotationDeltaOverride
+        : invertRotationDelta;
     if (!pair.isHips && pair.useParentRelativeRestDelta) {
       pair.source.getWorldQuaternion(targetWorldQ);
       targetWorldQ.multiply(pair.restWorldDeltaQ).normalize();
@@ -566,7 +990,7 @@ export function applyLiveRetargetPose({
       pair.target.updateMatrixWorld(true);
       continue;
     }
-    if (invertRotationDelta) {
+    if (pairInvertRotationDelta) {
       deltaQ.copy(pair.source.quaternion).invert().multiply(pair.sourceRestQ);
     } else {
       deltaQ.copy(pair.sourceRestQ).invert().multiply(pair.source.quaternion);
@@ -589,6 +1013,36 @@ export function applyLiveRetargetPose({
       pair.target.position.copy(pair.targetRestPos);
     }
     pair.target.updateMatrixWorld(true);
+  }
+  if (Array.isArray(plan.legChains) && plan.legChains.length) {
+    for (const chain of plan.legChains) {
+      if (chain.enableUpperLegDirectionCorrection) {
+        applyUpperLegDirectionCorrection(chain);
+      }
+      const footDotStart = computeFootDot(chain);
+      applyKneePlaneCorrection(chain);
+      pushFootDebug({ side: chain.side, step: "kneePlane", footDotBefore: footDotStart, footDotAfter: computeFootDot(chain) });
+      if (chain.enableShinDirectionCorrection) {
+        const before = computeFootDot(chain);
+        applyShinDirectionCorrection(chain);
+        pushFootDebug({ side: chain.side, step: "shinDirection", footDotBefore: before, footDotAfter: computeFootDot(chain) });
+      }
+      if (chain.enableFootPlaneCorrection) {
+        const before = computeFootDot(chain);
+        applyFootPlaneCorrection(chain);
+        pushFootDebug({ side: chain.side, step: "footPlane", footDotBefore: before, footDotAfter: computeFootDot(chain) });
+      }
+      if (chain.enableFootMirrorCorrection) {
+        const before = computeFootDot(chain);
+        applyFootMirrorCorrection(chain);
+        pushFootDebug({ side: chain.side, step: "footMirror", footDotBefore: before, footDotAfter: computeFootDot(chain) });
+      }
+      if (chain.enableFootDirectionCorrection) {
+        const before = computeFootDot(chain);
+        applyFootDirectionCorrection(chain);
+        pushFootDebug({ side: chain.side, step: "footDirection.post", footDotBefore: before, footDotAfter: computeFootDot(chain) });
+      }
+    }
   }
   modelRoot?.updateMatrixWorld(true);
 }

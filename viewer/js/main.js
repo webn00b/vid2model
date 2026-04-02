@@ -48,11 +48,13 @@
     } from "./modules/retarget-live.js";
     import { DEFAULT_VRM_ANIMATION_URL, loadDefaultVrmAnimation } from "./modules/default-animation.js";
     import { buildVrmDirectBodyPlan } from "./modules/retarget-vrm.js";
+    import { getBuiltinRigProfile } from "./modules/rig-profiles.js";
     import {
       attemptPriority,
       buildCanonicalBoneMap,
       buildRenamedClip,
       buildRetargetMap,
+      scaleClipRotationsByCanonical,
       buildStageSourceClip,
       canonicalPoseSignature,
       collectLimbDiagnostics,
@@ -130,6 +132,13 @@
     let fingerLengthCalibration = null;
     let sourceOverlay = null;
     let sourceAxesDebug = null;
+    let restCorrectionLog = [];
+    let legChainDiagLog = [];
+    let footChainDiagLog = [];
+    let boneLabelDebug = {
+      source: null,
+      target: null,
+    };
     let isPlaying = false;
     let isScrubbing = false;
     const loader = new BVHLoader();
@@ -256,6 +265,33 @@
       return { applied, renamed, bones, normalizedBones };
     }
 
+    function augmentRetargetTargetBonesWithFallback(baseBones, fallbackBones, stage) {
+      const result = [];
+      const seen = new Set();
+      for (const bone of baseBones || []) {
+        if (!bone?.isBone) continue;
+        const id = bone.uuid || bone.name;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        result.push(bone);
+      }
+      if (stage !== "body") return result;
+
+      const requiredCanonicals = ["leftToes", "rightToes"];
+      const presentCanonicals = new Set(result.map((bone) => canonicalBoneKey(bone.name)).filter(Boolean));
+      for (const canonical of requiredCanonicals) {
+        if (presentCanonicals.has(canonical)) continue;
+        const fallbackBone =
+          (fallbackBones || []).find((bone) => (canonicalBoneKey(bone.name) || "") === canonical) || null;
+        if (!fallbackBone?.isBone) continue;
+        const id = fallbackBone.uuid || fallbackBone.name;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        result.push(fallbackBone);
+      }
+      return result;
+    }
+
     function getRetargetTargetBones(stage = getRetargetStage(), options = {}) {
       const fallback = modelSkinnedMesh?.skeleton?.bones || [];
       const preferNormalized = !!options.preferNormalized;
@@ -264,12 +300,12 @@
           ? modelVrmNormalizedHumanoidBones
           : modelVrmHumanoidBones;
       if (!vrmBones.length) return fallback;
-      if (stage === "body") {
-        return vrmBones.filter((bone) =>
-          RETARGET_BODY_CANONICAL.has(canonicalBoneKey(bone.name) || "")
-        );
-      }
-      return vrmBones.slice();
+      const base = stage === "body"
+        ? vrmBones.filter((bone) =>
+            RETARGET_BODY_CANONICAL.has(canonicalBoneKey(bone.name) || "")
+          )
+        : vrmBones.slice();
+      return augmentRetargetTargetBonesWithFallback(base, fallback, stage);
     }
 
     function hashString(text) {
@@ -328,13 +364,37 @@
       }
     }
 
-    function loadRigProfile(modelFingerprint, stage) {
-      if (!modelFingerprint || !stage) return null;
-      return (
-        readStoredRigProfiles().find(
-          (entry) => entry?.modelFingerprint === modelFingerprint && entry?.stage === stage
-        ) || null
-      );
+    function loadRigProfile(modelFingerprint, stage, modelLabel = "") {
+      if (!stage) return null;
+      const builtin = getBuiltinRigProfile({ modelFingerprint, modelLabel, stage });
+      if (builtin?.lockBuiltin) {
+        return builtin;
+      }
+      const stored =
+        modelFingerprint
+          ? (
+              readStoredRigProfiles().find(
+                (entry) => entry?.modelFingerprint === modelFingerprint && entry?.stage === stage
+              ) || null
+            )
+          : null;
+      if (stored && builtin) {
+        return {
+          ...builtin,
+          ...stored,
+          namesTargetToSource: {
+            ...(builtin.namesTargetToSource || {}),
+            ...(stored.namesTargetToSource || {}),
+          },
+          liveRetarget: stored.liveRetarget ?? builtin.liveRetarget ?? null,
+          source: stored.source || "localStorage",
+          basedOnBuiltin: builtin.id || true,
+        };
+      }
+      if (stored) {
+        return { ...stored, source: stored.source || "localStorage" };
+      }
+      return builtin;
     }
 
     function saveRigProfile(entry) {
@@ -529,45 +589,604 @@
       statusEl.textContent = text;
     }
 
-    function createTextSprite(text, color = "#ffffff") {
+    function isVerboseDiagMode() {
+      return String(window.__vid2modelDiagMode || "minimal").trim().toLowerCase() === "verbose";
+    }
+
+    function resetRestCorrectionLog() {
+      restCorrectionLog = [];
+      window.__vid2modelRestCorrections = restCorrectionLog;
+    }
+
+    function resetLegChainDiagLog() {
+      legChainDiagLog = [];
+      window.__vid2modelLegChainDiag = legChainDiagLog;
+    }
+
+    function resetFootChainDiagLog() {
+      footChainDiagLog = [];
+      window.__vid2modelFootChainDiag = footChainDiagLog;
+    }
+
+    function recordRestCorrectionLog(entry) {
+      if (!entry?.canonical) return;
+      const key = `${entry.canonical}|${entry.target || ""}|${entry.source || ""}`;
+      if (restCorrectionLog.some((row) => `${row.canonical}|${row.target || ""}|${row.source || ""}` === key)) {
+        return;
+      }
+      restCorrectionLog.push(entry);
+      window.__vid2modelRestCorrections = restCorrectionLog;
+    }
+
+    function dumpRestCorrectionLog(reason = "retarget") {
+      const rows = Array.isArray(restCorrectionLog) ? restCorrectionLog.slice() : [];
+      window.__vid2modelRestCorrections = rows;
+      if (!rows.length) return;
+      const suspicious = rows.filter((row) => (row.finalAngleDeg || 0) >= 90 || (row.autoAngleDeg || 0) >= 90);
+      if (!isVerboseDiagMode() && !suspicious.length) return;
+      console.log("[vid2model/diag] rest-corrections", {
+        reason,
+        total: rows.length,
+        suspicious: suspicious.length,
+      });
+      if (isVerboseDiagMode()) {
+        console.table(rows);
+      } else if (suspicious.length >= 6) {
+        console.table(suspicious);
+      }
+    }
+
+    function toRoundedVec3(vec) {
+      if (!vec || !Number.isFinite(vec.x) || !Number.isFinite(vec.y) || !Number.isFinite(vec.z)) return null;
+      return {
+        x: Number(vec.x.toFixed(4)),
+        y: Number(vec.y.toFixed(4)),
+        z: Number(vec.z.toFixed(4)),
+      };
+    }
+
+    function angleBetweenWorldSegments(aStart, aEnd, bStart, bEnd) {
+      if (!aStart || !aEnd || !bStart || !bEnd) return null;
+      const a = new THREE.Vector3().subVectors(aEnd, aStart);
+      const b = new THREE.Vector3().subVectors(bEnd, bStart);
+      const aLen = a.length();
+      const bLen = b.length();
+      if (!(aLen > 1e-6) || !(bLen > 1e-6)) return null;
+      a.multiplyScalar(1 / aLen);
+      b.multiplyScalar(1 / bLen);
+      return Number(THREE.MathUtils.radToDeg(a.angleTo(b)).toFixed(3));
+    }
+
+    function computeBendNormal(startPos, midPos, endPos) {
+      if (!startPos || !midPos || !endPos) return null;
+      const a = new THREE.Vector3().subVectors(midPos, startPos);
+      const b = new THREE.Vector3().subVectors(endPos, midPos);
+      const aLen = a.length();
+      const bLen = b.length();
+      if (!(aLen > 1e-6) || !(bLen > 1e-6)) return null;
+      a.multiplyScalar(1 / aLen);
+      b.multiplyScalar(1 / bLen);
+      const normal = new THREE.Vector3().crossVectors(a, b);
+      if (normal.lengthSq() < 1e-10) return null;
+      return normal.normalize();
+    }
+
+    function getPrimaryChildBone(bone) {
+      if (!bone?.isBone) return null;
+      bone.getWorldPosition(_tmpWorldPosA);
+      let bestChild = null;
+      let bestLenSq = 0;
+      for (const child of bone.children || []) {
+        if (!child?.isBone) continue;
+        child.getWorldPosition(_tmpWorldPosB);
+        const lenSq = _tmpWorldPosB.distanceToSquared(_tmpWorldPosA);
+        if (lenSq > bestLenSq) {
+          bestLenSq = lenSq;
+          bestChild = child;
+        }
+      }
+      return bestLenSq > 1e-10 ? bestChild : null;
+    }
+
+    function buildLegChainDiagnostics({ targetBones = [], sourceBones = [], names = {}, reason = "retarget" } = {}) {
+      const targetMap = buildCanonicalBoneMap(targetBones || []);
+      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
+      const rows = [];
+      const legSides = ["left", "right"];
+      for (const side of legSides) {
+        const upperKey = `${side}UpperLeg`;
+        const lowerKey = `${side}LowerLeg`;
+        const footKey = `${side}Foot`;
+        const toesKey = `${side}Toes`;
+        const targetUpper = targetMap.get(upperKey) || null;
+        const targetLower = targetMap.get(lowerKey) || null;
+        const targetFoot = targetMap.get(footKey) || null;
+        const targetToes = targetMap.get(toesKey) || null;
+        if (!targetUpper || !targetLower || !targetFoot) continue;
+
+        const mappedUpperCanonical = canonicalBoneKey(names[targetUpper.name] || upperKey) || upperKey;
+        const mappedLowerCanonical = canonicalBoneKey(names[targetLower.name] || lowerKey) || lowerKey;
+        const mappedFootCanonical = canonicalBoneKey(names[targetFoot.name] || footKey) || footKey;
+        const mappedToesCanonical = canonicalBoneKey(targetToes ? (names[targetToes.name] || toesKey) : toesKey) || toesKey;
+
+        const sourceUpper = sourceMap.get(mappedUpperCanonical) || null;
+        const sourceLower = sourceMap.get(mappedLowerCanonical) || null;
+        const sourceFoot = sourceMap.get(mappedFootCanonical) || null;
+        const sourceToes = sourceMap.get(mappedToesCanonical) || null;
+        if (!sourceUpper || !sourceLower || !sourceFoot) continue;
+
+        const targetUpperPos = new THREE.Vector3();
+        const targetLowerPos = new THREE.Vector3();
+        const targetFootPos = new THREE.Vector3();
+        const targetToesPos = targetToes ? new THREE.Vector3() : null;
+        const sourceUpperPos = new THREE.Vector3();
+        const sourceLowerPos = new THREE.Vector3();
+        const sourceFootPos = new THREE.Vector3();
+        const sourceToesPos = sourceToes ? new THREE.Vector3() : null;
+
+        targetUpper.getWorldPosition(targetUpperPos);
+        targetLower.getWorldPosition(targetLowerPos);
+        targetFoot.getWorldPosition(targetFootPos);
+        if (targetToes && targetToesPos) targetToes.getWorldPosition(targetToesPos);
+        sourceUpper.getWorldPosition(sourceUpperPos);
+        sourceLower.getWorldPosition(sourceLowerPos);
+        sourceFoot.getWorldPosition(sourceFootPos);
+        if (sourceToes && sourceToesPos) sourceToes.getWorldPosition(sourceToesPos);
+
+        const targetBendNormal = computeBendNormal(targetUpperPos, targetLowerPos, targetFootPos);
+        const sourceBendNormal = computeBendNormal(sourceUpperPos, sourceLowerPos, sourceFootPos);
+        const bendDot =
+          targetBendNormal && sourceBendNormal
+            ? Number(targetBendNormal.dot(sourceBendNormal).toFixed(4))
+            : null;
+        const bendAngleDeg =
+          targetBendNormal && sourceBendNormal
+            ? Number(THREE.MathUtils.radToDeg(targetBendNormal.angleTo(sourceBendNormal)).toFixed(3))
+            : null;
+
+        rows.push({
+          side,
+          reason,
+          target: {
+            upper: targetUpper.name,
+            lower: targetLower.name,
+            foot: targetFoot.name,
+            toes: targetToes?.name || null,
+          },
+          source: {
+            upper: sourceUpper.name,
+            lower: sourceLower.name,
+            foot: sourceFoot.name,
+            toes: sourceToes?.name || null,
+          },
+          sourceCanonical: {
+            upper: mappedUpperCanonical,
+            lower: mappedLowerCanonical,
+            foot: mappedFootCanonical,
+            toes: sourceToes ? mappedToesCanonical : null,
+          },
+          thighAngleDeg: angleBetweenWorldSegments(targetUpperPos, targetLowerPos, sourceUpperPos, sourceLowerPos),
+          shinAngleDeg: angleBetweenWorldSegments(targetLowerPos, targetFootPos, sourceLowerPos, sourceFootPos),
+          footAngleDeg:
+            targetToesPos && sourceToesPos
+              ? angleBetweenWorldSegments(targetFootPos, targetToesPos, sourceFootPos, sourceToesPos)
+              : null,
+          bendAngleDeg,
+          bendDot,
+          bendMirrored: bendDot != null ? bendDot < 0 : null,
+          targetBendNormal: toRoundedVec3(targetBendNormal),
+          sourceBendNormal: toRoundedVec3(sourceBendNormal),
+        });
+      }
+      legChainDiagLog = rows;
+      window.__vid2modelLegChainDiag = rows;
+      return rows;
+    }
+
+    function dumpLegChainDiagLog(reason = "retarget") {
+      const rows = Array.isArray(legChainDiagLog) ? legChainDiagLog.slice() : [];
+      window.__vid2modelLegChainDiag = rows;
+      if (!rows.length) return;
+      const suspicious = rows.filter((row) => {
+        const segmentWorst = Math.max(row.thighAngleDeg || 0, row.shinAngleDeg || 0, row.footAngleDeg || 0);
+        return row.bendMirrored === true || segmentWorst >= 90 || (row.bendAngleDeg || 0) >= 90;
+      });
+      if (!isVerboseDiagMode() && !suspicious.length) return;
+      console.log("[vid2model/diag] leg-chain", {
+        reason,
+        total: rows.length,
+        suspicious: suspicious.length,
+      });
+      if (isVerboseDiagMode()) {
+        console.table(rows);
+      } else if (suspicious.length) {
+        console.table(suspicious);
+      }
+    }
+
+    function buildFootChainDiagnostics({ targetBones = [], sourceBones = [], names = {}, reason = "retarget" } = {}) {
+      const targetMap = buildCanonicalBoneMap(targetBones || []);
+      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
+      const rows = [];
+      const legSides = ["left", "right"];
+      for (const side of legSides) {
+        const footKey = `${side}Foot`;
+        const toesKey = `${side}Toes`;
+        const targetFoot = targetMap.get(footKey) || null;
+        const targetToes = targetMap.get(toesKey) || getPrimaryChildBone(targetFoot) || null;
+        if (!targetFoot || !targetToes) continue;
+        const mappedFootCanonical = canonicalBoneKey(names[targetFoot.name] || footKey) || footKey;
+        const mappedToesCanonical = canonicalBoneKey(names[targetToes.name] || toesKey) || toesKey;
+        const sourceFoot = sourceMap.get(mappedFootCanonical) || null;
+        const sourceToes = sourceMap.get(mappedToesCanonical) || getPrimaryChildBone(sourceFoot) || null;
+        if (!sourceFoot || !sourceToes) continue;
+
+        const targetFootPos = new THREE.Vector3();
+        const targetToesPos = new THREE.Vector3();
+        const sourceFootPos = new THREE.Vector3();
+        const sourceToesPos = new THREE.Vector3();
+        targetFoot.getWorldPosition(targetFootPos);
+        targetToes.getWorldPosition(targetToesPos);
+        sourceFoot.getWorldPosition(sourceFootPos);
+        sourceToes.getWorldPosition(sourceToesPos);
+
+        const footAngleDeg = angleBetweenWorldSegments(targetFootPos, targetToesPos, sourceFootPos, sourceToesPos);
+        const targetDir = targetToesPos.sub(targetFootPos).normalize();
+        const sourceDir = sourceToesPos.sub(sourceFootPos).normalize();
+        const footDot =
+          targetDir.lengthSq() > 1e-10 && sourceDir.lengthSq() > 1e-10
+            ? Number(targetDir.dot(sourceDir).toFixed(4))
+            : null;
+
+        rows.push({
+          side,
+          reason,
+          target: {
+            foot: targetFoot.name,
+            toes: targetToes.name,
+          },
+          source: {
+            foot: sourceFoot.name,
+            toes: sourceToes.name,
+          },
+          sourceCanonical: {
+            foot: mappedFootCanonical,
+            toes: mappedToesCanonical,
+          },
+          footAngleDeg,
+          footDot,
+          footMirrored: footDot != null ? footDot < 0 : null,
+          targetFootDir: toRoundedVec3(targetDir),
+          sourceFootDir: toRoundedVec3(sourceDir),
+        });
+      }
+      footChainDiagLog = rows;
+      window.__vid2modelFootChainDiag = rows;
+      return rows;
+    }
+
+    function dumpFootChainDiagLog(reason = "retarget") {
+      const rows = Array.isArray(footChainDiagLog) ? footChainDiagLog.slice() : [];
+      window.__vid2modelFootChainDiag = rows;
+      if (!rows.length) return;
+      const suspicious = rows.filter((row) => row.footMirrored === true || (row.footAngleDeg || 0) >= 45);
+      if (!isVerboseDiagMode() && !suspicious.length) return;
+      console.log("[vid2model/diag] foot-chain", {
+        reason,
+        total: rows.length,
+        suspicious: suspicious.length,
+      });
+      if (isVerboseDiagMode() || !suspicious.length) {
+        console.table(rows);
+      } else {
+        console.table(suspicious);
+      }
+    }
+
+    function dumpFootCorrectionDebug(reason = "retarget") {
+      const rows = Array.isArray(window.__vid2modelFootCorrectionDebug)
+        ? window.__vid2modelFootCorrectionDebug.slice()
+        : [];
+      window.__vid2modelFootCorrectionDebug = rows;
+      if (!rows.length) return;
+      const suspicious = rows.filter((row) => {
+        const before = Number.isFinite(row?.footDotBefore) ? row.footDotBefore : null;
+        const after = Number.isFinite(row?.footDotAfter) ? row.footDotAfter : null;
+        if (before == null || after == null) return false;
+        return after <= before + 1e-4;
+      });
+      if (!isVerboseDiagMode() && !suspicious.length) return;
+      console.log("[vid2model/diag] foot-correction-debug", {
+        reason,
+        total: rows.length,
+        suspicious: suspicious.length,
+      });
+      console.table(suspicious.length ? suspicious : rows);
+    }
+
+    function disposeBoneLabelSprite(sprite) {
+      if (!sprite) return;
+      if (sprite.material?.map) sprite.material.map.dispose();
+      if (sprite.material) sprite.material.dispose();
+    }
+
+    function clearBoneLabels(kind = "both") {
+      const keys = kind === "both" ? ["source", "target"] : [kind];
+      for (const key of keys) {
+        const entry = boneLabelDebug[key];
+        if (!entry) continue;
+        scene.remove(entry.group);
+        for (const sprite of entry.sprites || []) {
+          disposeBoneLabelSprite(sprite);
+        }
+        boneLabelDebug[key] = null;
+      }
+    }
+
+    function createBoneLabelSprite(text, palette = {}) {
       const canvas = document.createElement("canvas");
-      canvas.width = 256;
-      canvas.height = 96;
+      canvas.width = 512;
+      canvas.height = 196;
       const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      const bg = palette.bg || "rgba(15, 23, 42, 0.82)";
+      const fg = palette.fg || "#f8fafc";
+      const stroke = palette.stroke || "rgba(148, 163, 184, 0.9)";
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.font = "bold 36px sans-serif";
+      ctx.fillStyle = bg;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 4;
+      const radius = 18;
+      ctx.beginPath();
+      ctx.moveTo(radius, 10);
+      ctx.lineTo(canvas.width - radius, 10);
+      ctx.quadraticCurveTo(canvas.width - 10, 10, canvas.width - 10, radius);
+      ctx.lineTo(canvas.width - 10, canvas.height - radius - 10);
+      ctx.quadraticCurveTo(canvas.width - 10, canvas.height - 10, canvas.width - radius, canvas.height - 10);
+      ctx.lineTo(radius, canvas.height - 10);
+      ctx.quadraticCurveTo(10, canvas.height - 10, 10, canvas.height - radius - 10);
+      ctx.lineTo(10, radius);
+      ctx.quadraticCurveTo(10, 10, radius, 10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      const lines = String(text || "").split("\n").filter(Boolean).slice(0, 3);
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.lineWidth = 8;
-      ctx.strokeStyle = "rgba(0,0,0,0.75)";
-      ctx.fillStyle = color;
-      ctx.strokeText(text, canvas.width / 2, canvas.height / 2);
-      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+      ctx.fillStyle = fg;
+      if (lines.length >= 3) {
+        ctx.font = "bold 34px sans-serif";
+        ctx.fillText(lines[0], canvas.width / 2, 42);
+        ctx.font = "24px monospace";
+        ctx.fillText(lines[1], canvas.width / 2, 96);
+        ctx.fillText(lines[2], canvas.width / 2, 146);
+      } else if (lines.length === 2) {
+        ctx.font = "bold 38px sans-serif";
+        ctx.fillText(lines[0], canvas.width / 2, 58);
+        ctx.font = "26px monospace";
+        ctx.fillText(lines[1], canvas.width / 2, 118);
+      } else {
+        ctx.font = "bold 42px sans-serif";
+        ctx.fillText(lines[0] || "", canvas.width / 2, canvas.height / 2);
+      }
+
       const texture = new THREE.CanvasTexture(canvas);
       texture.needsUpdate = true;
       const material = new THREE.SpriteMaterial({
         map: texture,
+        transparent: true,
         depthTest: false,
         depthWrite: false,
-        transparent: true,
+        sizeAttenuation: true,
       });
       const sprite = new THREE.Sprite(material);
-      sprite.scale.set(26, 10, 1);
       sprite.renderOrder = 1000;
       return sprite;
+    }
+
+    function getNearestSourceCanonicalForBone(targetBone, scope = "legs") {
+      if (!targetBone?.isBone) return "";
+      const sourceBones = sourceResult?.skeleton?.bones || [];
+      if (!sourceBones.length) return "";
+      const canonicals = resolveSkeletonDumpCanonicals(scope);
+      if (!canonicals?.length) return "";
+      const sourceMap = buildCanonicalBoneMap(sourceBones);
+      targetBone.getWorldPosition(_tmpWorldPosA);
+      let bestCanonical = "";
+      let bestDistanceSq = Infinity;
+      for (const canonical of canonicals) {
+        const sourceBone = sourceMap.get(canonical) || null;
+        if (!sourceBone?.isBone) continue;
+        sourceBone.getWorldPosition(_tmpWorldPosB);
+        const distanceSq = _tmpWorldPosA.distanceToSquared(_tmpWorldPosB);
+        if (distanceSq < bestDistanceSq) {
+          bestDistanceSq = distanceSq;
+          bestCanonical = canonical;
+        }
+      }
+      return bestCanonical;
+    }
+
+    function getBoneLabelText(kind, canonical, bone, scope = "legs") {
+      const prefix = kind === "target" ? "MODEL" : "SRC";
+      const label = String(canonical || bone?.name || "").trim();
+      const rawName = String(bone?.name || "").trim();
+      if (kind === "target") {
+        const names = window.__vid2modelDebug?.names || {};
+        const mappedSourceCanonical =
+          bone?.name ? (canonicalBoneKey(names[bone.name] || "") || "") : "";
+        const nearestSourceCanonical = getNearestSourceCanonicalForBone(bone, scope);
+        if (!label) return rawName ? `${prefix}\n${rawName}` : prefix;
+        const lines = [`${prefix} ${label}`];
+        if (mappedSourceCanonical) {
+          lines.push(`MAP SRC ${mappedSourceCanonical}`);
+        }
+        if (nearestSourceCanonical && nearestSourceCanonical !== mappedSourceCanonical) {
+          lines.push(`POS SRC ${nearestSourceCanonical}`);
+        }
+        if (lines.length > 1) return lines.join("\n");
+      }
+      if (!label) return rawName ? `${prefix}\n${rawName}` : prefix;
+      if (!rawName || rawName === label) return `${prefix}\n${label}`;
+      return `${prefix} ${label}\n${rawName}`;
+    }
+
+    function getBoneLabelScale(kind) {
+      const root = kind === "target" ? modelRoot : (sourceResult?.skeleton?.bones?.[0] || null);
+      const height = objectHeight(root);
+      const scale = Number.isFinite(height) && height > 0 ? height * 0.14 : 0.18;
+      return Math.max(0.08, Math.min(0.38, scale));
+    }
+
+    function buildBoneLabelDebug(kind = "source", scope = "legs") {
+      const canonicals = resolveSkeletonDumpCanonicals(scope);
+      const bones =
+        kind === "target"
+          ? getRetargetTargetBones(getRetargetStage(), { preferNormalized: false })
+          : (sourceResult?.skeleton?.bones || []);
+      if (!bones.length || !canonicals.length) return null;
+      const boneMap = buildCanonicalBoneMap(bones);
+      const group = new THREE.Group();
+      const sprites = [];
+      const palette =
+        kind === "target"
+          ? { bg: "rgba(120, 53, 15, 0.84)", fg: "#fff7ed", stroke: "rgba(251, 146, 60, 0.95)" }
+          : { bg: "rgba(30, 41, 59, 0.84)", fg: "#eff6ff", stroke: "rgba(96, 165, 250, 0.95)" };
+      const scale = getBoneLabelScale(kind);
+      for (const canonical of canonicals) {
+        const bone = boneMap.get(canonical) || null;
+        if (!bone?.isBone) continue;
+        const sprite = createBoneLabelSprite(getBoneLabelText(kind, canonical, bone, scope), palette);
+        if (!sprite) continue;
+        sprite.scale.set(scale, scale * 0.34, 1);
+        group.add(sprite);
+        sprites.push(sprite);
+      }
+      if (!sprites.length) return null;
+      scene.add(group);
+      return { group, sprites, bones: canonicals.map((canonical) => boneMap.get(canonical) || null), scale };
+    }
+
+    function updateBoneLabels() {
+      const yOffset = 0.06;
+      const xOffset = 0.04;
+      for (const [kind, entry] of Object.entries(boneLabelDebug)) {
+        if (!entry?.sprites?.length) continue;
+        for (let i = 0; i < entry.sprites.length; i += 1) {
+          const sprite = entry.sprites[i];
+          const bone = entry.bones[i];
+          if (!sprite || !bone?.isBone) continue;
+          bone.getWorldPosition(_tmpWorldPosA);
+          const canonical = canonicalBoneKey(bone.name) || "";
+          const sideX = canonical.startsWith("left") ? -xOffset : canonical.startsWith("right") ? xOffset : 0;
+          sprite.position.set(_tmpWorldPosA.x + sideX, _tmpWorldPosA.y + yOffset, _tmpWorldPosA.z);
+        }
+      }
+    }
+
+    function refreshBoneLabels() {
+      const cfg = window.__vid2modelBoneLabels || { enabled: false, which: "both", scope: "legs" };
+      clearBoneLabels("both");
+      if (!cfg.enabled) return;
+      if (cfg.which === "source" || cfg.which === "both") {
+        boneLabelDebug.source = buildBoneLabelDebug("source", cfg.scope);
+      }
+      if (cfg.which === "target" || cfg.which === "both") {
+        boneLabelDebug.target = buildBoneLabelDebug("target", cfg.scope);
+      }
+      updateBoneLabels();
+    }
+
+    function formatVec3(vec) {
+      if (!vec || !Number.isFinite(vec.x) || !Number.isFinite(vec.y) || !Number.isFinite(vec.z)) return "";
+      return `${vec.x.toFixed(2)}, ${vec.y.toFixed(2)}, ${vec.z.toFixed(2)}`;
+    }
+
+    function getBoneWorldPosString(bone) {
+      if (!bone?.isBone) return "";
+      bone.getWorldPosition(_tmpWorldPosA);
+      return formatVec3(_tmpWorldPosA);
+    }
+
+    function getBonePrimaryChildWorldDirString(bone) {
+      if (!bone?.isBone) return "";
+      const child = getPrimaryChildBone(bone);
+      if (!child) return "";
+      bone.getWorldPosition(_tmpWorldPosA);
+      child.getWorldPosition(_tmpWorldPosB);
+      _tmpWorldPosB.sub(_tmpWorldPosA);
+      if (_tmpWorldPosB.lengthSq() < 1e-10) return "";
+      _tmpWorldPosB.normalize();
+      return formatVec3(_tmpWorldPosB);
+    }
+
+    function getSkeletonCanonicalRows({ targetBones = [], sourceBones = [], names = {}, canonicals = [] } = {}) {
+      const targetMap = buildCanonicalBoneMap(targetBones || []);
+      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
+      return (canonicals || []).map((canonical, index) => {
+        const targetBone = targetMap.get(canonical) || null;
+        const sourceCanonical = targetBone
+          ? (canonicalBoneKey(names[targetBone.name] || canonical) || canonical)
+          : canonical;
+        const sourceBone = sourceMap.get(sourceCanonical) || null;
+        return {
+          index,
+          canonical,
+          targetBone: targetBone?.name || "",
+          targetParent: targetBone?.parent?.isBone ? targetBone.parent.name : "",
+          targetChild: getPrimaryChildBone(targetBone)?.name || "",
+          targetWorldPos: getBoneWorldPosString(targetBone),
+          targetDir: getBonePrimaryChildWorldDirString(targetBone),
+          mappedSourceCanonical: sourceCanonical,
+          sourceBone: sourceBone?.name || "",
+          sourceParent: sourceBone?.parent?.isBone ? sourceBone.parent.name : "",
+          sourceChild: getPrimaryChildBone(sourceBone)?.name || "",
+          sourceWorldPos: getBoneWorldPosString(sourceBone),
+          sourceDir: getBonePrimaryChildWorldDirString(sourceBone),
+        };
+      });
+    }
+
+    function resolveSkeletonDumpCanonicals(scope = "legs") {
+      const normalized = String(scope || "legs").trim().toLowerCase();
+      if (normalized === "left" || normalized === "left-leg") {
+        return ["leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes"];
+      }
+      if (normalized === "right" || normalized === "right-leg") {
+        return ["rightUpperLeg", "rightLowerLeg", "rightFoot", "rightToes"];
+      }
+      if (normalized === "body") {
+        return [
+          "hips",
+          "spine",
+          "chest",
+          "upperChest",
+          "leftUpperLeg",
+          "leftLowerLeg",
+          "leftFoot",
+          "leftToes",
+          "rightUpperLeg",
+          "rightLowerLeg",
+          "rightFoot",
+          "rightToes",
+        ];
+      }
+      return [
+        "leftUpperLeg",
+        "leftLowerLeg",
+        "leftFoot",
+        "leftToes",
+        "rightUpperLeg",
+        "rightLowerLeg",
+        "rightFoot",
+        "rightToes",
+      ];
     }
 
     function clearSourceAxesDebug() {
       if (!sourceAxesDebug) return;
       scene.remove(sourceAxesDebug.group);
-      for (const sprite of Object.values(sourceAxesDebug.labels)) {
-        sprite.material.map?.dispose?.();
-        sprite.material.dispose?.();
-      }
-      for (const sprite of sourceAxesDebug.boneLabels || []) {
-        sprite.material.map?.dispose?.();
-        sprite.material.dispose?.();
-      }
       sourceAxesDebug = null;
     }
 
@@ -580,24 +1199,7 @@
       const upArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), axisLength, 0x22c55e, headLength, headWidth);
       const rightArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), axisLength, 0xef4444, headLength, headWidth);
       const forwardArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), axisLength, 0x3b82f6, headLength, headWidth);
-      const labels = {
-        up: createTextSprite("UP", "#22c55e"),
-        right: createTextSprite("RIGHT", "#ef4444"),
-        forward: createTextSprite("FWD", "#3b82f6"),
-        head: createTextSprite("HEAD", "#ffffff"),
-        leftHand: createTextSprite("L", "#f59e0b"),
-        rightHand: createTextSprite("R", "#f59e0b"),
-        leftFoot: createTextSprite("LF", "#f59e0b"),
-        rightFoot: createTextSprite("RF", "#f59e0b"),
-      };
-      const boneLabels = (skeleton?.bones || []).map((bone) => {
-        const canonical = canonicalBoneKey(bone.name);
-        const labelText = canonical || bone.name || "bone";
-        const sprite = createTextSprite(labelText, canonical ? "#f8fafc" : "#cbd5e1");
-        sprite.scale.set(22, 8, 1);
-        return sprite;
-      });
-      group.add(upArrow, rightArrow, forwardArrow, ...Object.values(labels), ...boneLabels);
+      group.add(upArrow, rightArrow, forwardArrow);
       scene.add(group);
       sourceAxesDebug = {
         skeleton,
@@ -605,8 +1207,6 @@
         upArrow,
         rightArrow,
         forwardArrow,
-        labels,
-        boneLabels,
       };
       updateSourceAxesDebug();
     }
@@ -658,38 +1258,6 @@
       sourceAxesDebug.forwardArrow.setDirection(_sourceAxisForward);
       sourceAxesDebug.forwardArrow.setLength(axisLength, 12, 6);
 
-      sourceAxesDebug.labels.up.position.copy(_sourceAxisOrigin).addScaledVector(_sourceAxisUp, axisLength + 14);
-      sourceAxesDebug.labels.right.position.copy(_sourceAxisOrigin).addScaledVector(_sourceAxisSide, axisLength + 14);
-      sourceAxesDebug.labels.forward.position.copy(_sourceAxisOrigin).addScaledVector(_sourceAxisForward, axisLength + 14);
-
-      if (head) {
-        sourceAxesDebug.labels.head.visible = true;
-        sourceAxesDebug.labels.head.position.copy(_sourceAxisHead).add(new THREE.Vector3(0, 10, 0));
-      } else {
-        sourceAxesDebug.labels.head.visible = false;
-      }
-      for (const [key, bone] of [["leftHand", leftHand], ["rightHand", rightHand], ["leftFoot", leftFoot], ["rightFoot", rightFoot]]) {
-        const sprite = sourceAxesDebug.labels[key];
-        if (bone) {
-          bone.getWorldPosition(_tmpWorldPosA);
-          sprite.visible = true;
-          sprite.position.copy(_tmpWorldPosA).add(new THREE.Vector3(0, 6, 0));
-        } else {
-          sprite.visible = false;
-        }
-      }
-
-      const showBoneLabels = window.__vid2modelShowBoneLabels !== false;
-      const bones = sourceAxesDebug.skeleton.bones || [];
-      for (let i = 0; i < bones.length; i += 1) {
-        const sprite = sourceAxesDebug.boneLabels?.[i];
-        const bone = bones[i];
-        if (!sprite || !bone) continue;
-        sprite.visible = showBoneLabels;
-        if (!showBoneLabels) continue;
-        bone.getWorldPosition(_tmpWorldPosA);
-        sprite.position.copy(_tmpWorldPosA).add(new THREE.Vector3(0, 3.5, 0));
-      }
     }
 
     function clearSourceOverlay() {
@@ -726,6 +1294,7 @@
             overlayPivot: _overlayPivot,
           }),
       });
+      refreshBoneLabels();
     }
 
     function fitToSkeleton(root) {
@@ -959,6 +1528,7 @@
       if (skeletonObj) {
         scene.remove(skeletonObj);
       }
+      clearBoneLabels("source");
       skeletonObj = null;
       clearSourceOverlay();
       clearSourceAxesDebug();
@@ -977,6 +1547,7 @@
       if (modelRoot) {
         scene.remove(modelRoot);
       }
+      clearBoneLabels("target");
       modelDefaultAnimationToken += 1;
       modelRoot = null;
       modelLabel = "";
@@ -1145,10 +1716,13 @@
       );
     }
 
-    function buildBoneLocalFrame(bone, outQ) {
+    function buildBoneLocalFrame(bone, outQ, options = null) {
       if (!bone || !outQ) return false;
       if (!getPrimaryChildDirectionLocal(bone, _calibV1)) return false;
       if (!getReferenceDirectionLocal(bone, _calibV1, _calibV2)) return false;
+      if (options?.flipReferenceAxis) {
+        _calibV2.multiplyScalar(-1);
+      }
       _calibV3.crossVectors(_calibV2, _calibV1);
       if (_calibV3.lengthSq() < 1e-8) return false;
       _calibV3.normalize();
@@ -1161,12 +1735,76 @@
     }
 
     function buildRestOrientationCorrection(sourceBone, targetBone) {
+      const canonical =
+        canonicalBoneKey(targetBone?.name) ||
+        canonicalBoneKey(sourceBone?.name) ||
+        "";
+      const restCorrectionProfile = loadRigProfile(modelRigFingerprint, getRetargetStage(), modelLabel);
+      const flipReferenceAxis = !!(
+        canonical &&
+        restCorrectionProfile?.flipReferenceAxisByCanonical?.[canonical]
+      );
+      const twistDeg = canonical
+        ? Number(restCorrectionProfile?.twistDegByCanonical?.[canonical] || 0)
+        : 0;
+      const offsetEntry = canonical
+        ? restCorrectionProfile?.restCorrectionEulerDegByCanonical?.[canonical] || null
+        : null;
+      const profileOffset =
+        offsetEntry && (offsetEntry.x || offsetEntry.y || offsetEntry.z)
+          ? new THREE.Quaternion().setFromEuler(
+              new THREE.Euler(
+                THREE.MathUtils.degToRad(Number(offsetEntry.x || 0)),
+                THREE.MathUtils.degToRad(Number(offsetEntry.y || 0)),
+                THREE.MathUtils.degToRad(Number(offsetEntry.z || 0)),
+                "XYZ"
+              )
+            ).normalize()
+          : null;
+      const profileOffsetDeg = profileOffset
+        ? {
+            x: Number(Number(offsetEntry.x || 0).toFixed(2)),
+            y: Number(Number(offsetEntry.y || 0).toFixed(2)),
+            z: Number(Number(offsetEntry.z || 0).toFixed(2)),
+          }
+        : null;
+      let twistQ = null;
+      if (Math.abs(twistDeg) > 1e-4) {
+        const twistAxis = new THREE.Vector3();
+        if (getPrimaryChildDirectionLocal(targetBone, twistAxis)) {
+          twistQ = new THREE.Quaternion()
+            .setFromAxisAngle(twistAxis, THREE.MathUtils.degToRad(twistDeg))
+            .normalize();
+        }
+      }
       const sourceFrame = _calibQ1;
       const targetFrame = _calibQ2;
-      if (buildBoneLocalFrame(sourceBone, sourceFrame) && buildBoneLocalFrame(targetBone, targetFrame)) {
+      if (
+        buildBoneLocalFrame(sourceBone, sourceFrame) &&
+        buildBoneLocalFrame(targetBone, targetFrame, { flipReferenceAxis })
+      ) {
         const corr = new THREE.Quaternion().copy(targetFrame).multiply(sourceFrame.invert()).normalize();
+        const autoAngleDeg = Number(THREE.MathUtils.radToDeg(2 * Math.acos(Math.min(1, Math.abs(corr.w)))).toFixed(3));
+        if (profileOffset) {
+          corr.premultiply(profileOffset).normalize();
+        }
+        if (twistQ) {
+          corr.premultiply(twistQ).normalize();
+        }
+        const finalAngleDeg = Number(THREE.MathUtils.radToDeg(2 * Math.acos(Math.min(1, Math.abs(corr.w)))).toFixed(3));
+        recordRestCorrectionLog({
+          canonical: canonical || "unknown",
+          target: targetBone?.name || "",
+          source: sourceBone?.name || "",
+          method: "local-frame",
+          autoAngleDeg,
+          profileOffsetDeg,
+          flipReferenceAxis,
+          twistDeg: Number(twistDeg.toFixed(2)),
+          finalAngleDeg,
+        });
         if (Math.abs(corr.w) > 0.9995) {
-          return null;
+          return twistQ || profileOffset || null;
         }
         return corr;
       }
@@ -1175,11 +1813,50 @@
       if (!getPrimaryChildDirectionLocal(sourceBone, sourceDir)) return null;
       if (!getPrimaryChildDirectionLocal(targetBone, targetDir)) return null;
       const dot = Math.max(-1, Math.min(1, sourceDir.dot(targetDir)));
-      if (dot > 0.9995) return null;
-      return new THREE.Quaternion().setFromUnitVectors(sourceDir, targetDir).normalize();
+      if (dot > 0.9995) {
+        recordRestCorrectionLog({
+          canonical: canonical || "unknown",
+          target: targetBone?.name || "",
+          source: sourceBone?.name || "",
+          method: "child-direction",
+          autoAngleDeg: 0,
+          profileOffsetDeg,
+          flipReferenceAxis,
+          twistDeg: Number(twistDeg.toFixed(2)),
+          finalAngleDeg: profileOffset
+            ? Number(THREE.MathUtils.radToDeg(2 * Math.acos(Math.min(1, Math.abs(profileOffset.w)))).toFixed(3))
+            : 0,
+        });
+        if (twistQ && profileOffset) {
+          return new THREE.Quaternion().copy(twistQ).premultiply(profileOffset).normalize();
+        }
+        return twistQ || profileOffset || null;
+      }
+      const corr = new THREE.Quaternion().setFromUnitVectors(sourceDir, targetDir).normalize();
+      const autoAngleDeg = Number(THREE.MathUtils.radToDeg(2 * Math.acos(Math.min(1, Math.abs(corr.w)))).toFixed(3));
+      if (profileOffset) {
+        corr.premultiply(profileOffset).normalize();
+      }
+      if (twistQ) {
+        corr.premultiply(twistQ).normalize();
+      }
+      const finalAngleDeg = Number(THREE.MathUtils.radToDeg(2 * Math.acos(Math.min(1, Math.abs(corr.w)))).toFixed(3));
+      recordRestCorrectionLog({
+        canonical: canonical || "unknown",
+        target: targetBone?.name || "",
+        source: sourceBone?.name || "",
+        method: "child-direction",
+        autoAngleDeg,
+        profileOffsetDeg,
+        flipReferenceAxis,
+        twistDeg: Number(twistDeg.toFixed(2)),
+        finalAngleDeg,
+      });
+      return corr;
     }
 
     function buildLiveRetargetPlan(skinnedMeshes, sourceBones, namesTargetToSource, targetBones = null) {
+      const rigProfile = loadRigProfile(modelRigFingerprint, getRetargetStage(), modelLabel);
       return buildLiveRetargetPlanModule({
         skinnedMeshes,
         targetBones,
@@ -1188,7 +1865,8 @@
         mixer,
         modelRoot,
         buildRestOrientationCorrection,
-        cachedProfile: loadRigProfile(modelRigFingerprint, getRetargetStage())?.liveRetarget || null,
+        cachedProfile: rigProfile?.liveRetarget || null,
+        profile: rigProfile,
       });
     }
 
@@ -1602,29 +2280,54 @@
       }
 
       try {
+        resetRestCorrectionLog();
+        resetLegChainDiagLog();
+        resetFootChainDiagLog();
         const retargetStage = getRetargetStage();
+        const cachedRigProfile = loadRigProfile(modelRigFingerprint, retargetStage, modelLabel);
+        const profileBodyCanonicalKeys =
+          retargetStage === "body" && Array.isArray(cachedRigProfile?.bodyCanonicalKeys)
+            ? cachedRigProfile.bodyCanonicalKeys
+            : null;
+        const useBodyCoreRetarget =
+          !profileBodyCanonicalKeys &&
+          retargetStage === "body" &&
+          String(cachedRigProfile?.bodyCanonicalMode || "").trim().toLowerCase() === "core";
+        const canonicalFilter = profileBodyCanonicalKeys
+          ? new Set(profileBodyCanonicalKeys.map((name) => String(name || "").trim()).filter(Boolean))
+          : useBodyCoreRetarget
+            ? RETARGET_BODY_CORE_CANONICAL
+            : getCanonicalFilterForStage(retargetStage);
         const stageClip = buildStageSourceClip(
           sourceResult.clip,
           sourceResult.skeleton.bones,
           retargetStage,
-          getCanonicalFilterForStage(retargetStage)
+          canonicalFilter
         );
         if (!stageClip) {
           setStatus(`Retarget failed: no source tracks for stage "${retargetStage}".`);
           diag("retarget-fail", { reason: "empty_stage_clip", stage: retargetStage });
           return;
         }
-        const canonicalFilter = getCanonicalFilterForStage(retargetStage);
-        const retargetTargetBones = getRetargetTargetBones(retargetStage);
-        const normalizedDirectBones = getRetargetTargetBones(retargetStage, { preferNormalized: true });
+        const activeStageClip = scaleClipRotationsByCanonical(
+          stageClip,
+          sourceResult.skeleton.bones,
+          cachedRigProfile?.rotationScaleByCanonical || null
+        ) || stageClip;
+        const retargetTargetBones = getRetargetTargetBones(retargetStage).filter((bone) =>
+          canonicalFilter.has(canonicalBoneKey(bone.name) || "")
+        );
+        const normalizedDirectBones = getRetargetTargetBones(retargetStage, { preferNormalized: true }).filter((bone) =>
+          canonicalFilter.has(canonicalBoneKey(bone.name) || "")
+        );
         const directRetargetTargetBones = normalizedDirectBones.length ? normalizedDirectBones : retargetTargetBones;
         resetModelRootOrientation();
-        const modelUsesPreferredRetargetHeuristics = /(^|[\\/])(en_0|MoonGirl)\.vrm$/i.test(modelLabel);
         const preferVrmDirectBody =
           retargetStage === "body" &&
           directRetargetTargetBones.length > 0 &&
-          shouldUseVrmDirectBody();
-        const cachedRigProfile = loadRigProfile(modelRigFingerprint, retargetStage);
+          (shouldUseVrmDirectBody() || cachedRigProfile?.preferVrmDirectBody === true);
+        const preferSkeletonOnRenameFallback = !!cachedRigProfile?.preferSkeletonOnRenameFallback;
+        const preferAggressiveLiveDelta = !!cachedRigProfile?.preferAggressiveLiveDelta;
         let rigProfileSaved = false;
         const initialMap = buildRetargetMap(
           retargetTargetBones,
@@ -1644,15 +2347,21 @@
           sourceResult.skeleton.bones,
           canonicalFilter
         );
-        const activeMapResult =
-          modelVrmHumanoidBones.length > 0 && modelUsesPreferredRetargetHeuristics
-            ? { ...profiledMapResult, mirroredSidesApplied: false }
-            : maybeSwapMirroredHumanoidSides(
-                profiledMapResult,
-                retargetTargetBones,
-                sourceResult.skeleton.bones,
-                canonicalFilter
-              );
+        const mirrorSwapMode = String(cachedRigProfile?.mirrorSwap || "").trim().toLowerCase();
+        const allowMirrorSwap =
+          mirrorSwapMode === "disable"
+            ? false
+            : mirrorSwapMode === "force" || mirrorSwapMode === "enable"
+              ? true
+              : true;
+        const activeMapResult = allowMirrorSwap
+          ? maybeSwapMirroredHumanoidSides(
+              profiledMapResult,
+              retargetTargetBones,
+              sourceResult.skeleton.bones,
+              canonicalFilter
+            )
+          : { ...profiledMapResult, mirroredSidesApplied: false };
         const {
           names,
           matched,
@@ -1666,10 +2375,11 @@
           stage: retargetStage,
           sourceBones: sourceResult.skeleton.bones.length,
           targetBones: retargetTargetBones.length,
-          sourceTracks: stageClip.tracks.length,
+          sourceTracks: activeStageClip.tracks.length,
           mappedPairs,
           uniqueSourceMapped: sourceMatched,
           humanoidMatched: canonicalCandidates > 0 ? `${matched}/${canonicalCandidates}` : "n/a",
+          mirrorSwap: allowMirrorSwap ? (mirrorSwapMode || "auto") : "disable",
         });
         diag("retarget-topology-fallback", {
           stage: retargetStage,
@@ -1717,7 +2427,7 @@
         };
 
         pushAttempt("skeletonutils-skinnedmesh", "skinned", () =>
-          SkeletonUtils.retargetClip(modelSkinnedMesh, sourceResult.skeleton, stageClip, {
+          SkeletonUtils.retargetClip(modelSkinnedMesh, sourceResult.skeleton, activeStageClip, {
             names,
             hip: "hips",
             useFirstFramePosition: true,
@@ -1726,7 +2436,7 @@
         );
         const namesSourceToTarget = Object.fromEntries(Object.entries(names).map(([target, source]) => [source, target]));
         pushAttempt("skeletonutils-skinnedmesh-reversed", "skinned", () =>
-          SkeletonUtils.retargetClip(modelSkinnedMesh, sourceResult.skeleton, stageClip, {
+          SkeletonUtils.retargetClip(modelSkinnedMesh, sourceResult.skeleton, activeStageClip, {
             names: namesSourceToTarget,
             hip: "hips",
             useFirstFramePosition: true,
@@ -1735,7 +2445,7 @@
         );
         if (modelRoot) {
           pushAttempt("skeletonutils-root", "root", () =>
-            SkeletonUtils.retargetClip(modelRoot, sourceResult.skeleton, stageClip, {
+            SkeletonUtils.retargetClip(modelRoot, sourceResult.skeleton, activeStageClip, {
               names,
               hip: "hips",
               useFirstFramePosition: true,
@@ -1743,7 +2453,7 @@
             })
           );
           pushAttempt("skeletonutils-root-reversed", "root", () =>
-            SkeletonUtils.retargetClip(modelRoot, sourceResult.skeleton, stageClip, {
+            SkeletonUtils.retargetClip(modelRoot, sourceResult.skeleton, activeStageClip, {
               names: namesSourceToTarget,
               hip: "hips",
               useFirstFramePosition: true,
@@ -1754,10 +2464,10 @@
 
         const sourceRootBoneName = sourceResult.skeleton.bones?.[0]?.name || "hips";
         pushAttempt("rename-fallback-bones", "skinned", () =>
-          buildRenamedClip(stageClip, names, sourceRootBoneName, "bones")
+          buildRenamedClip(activeStageClip, names, sourceRootBoneName, "bones")
         );
         pushAttempt("rename-fallback-object", "root", () =>
-          buildRenamedClip(stageClip, names, sourceRootBoneName, "object")
+          buildRenamedClip(activeStageClip, names, sourceRootBoneName, "object")
         );
 
         modelMixers = [];
@@ -1883,8 +2593,64 @@
           return;
         }
 
+        const preferredMode = String(cachedRigProfile?.preferredMode || "").trim();
+        if (preferredMode) {
+          const preferredAttempt = candidateAttempts.find((attempt) => attempt?.label === preferredMode) || null;
+          if (preferredAttempt && preferredAttempt.label !== selectedAttempt?.label) {
+            const preferredBindings = buildBindingsForAttempt({
+              attempt: preferredAttempt,
+              clip: preferredAttempt.clip,
+              modelSkinnedMeshes,
+              modelRoot,
+              modelSkinnedMesh,
+              clipUsesBonesSyntax,
+              resolvedTrackCountForTarget,
+            });
+            if (preferredBindings.mixers.length) {
+              const preferredProbe = probeMotionForBindings({
+                bindings: preferredBindings,
+                clip: preferredAttempt.clip,
+                modelSkinnedMesh,
+                modelRoot,
+                targetBones: retargetTargetBones,
+              });
+              const preferredPoseError = computePoseMatchError({
+                bindings: preferredBindings,
+                sampleTime: preferredProbe.sampleTime,
+                modelSkinnedMesh,
+                targetBones: retargetTargetBones,
+                sourceResult,
+                mixer,
+                modelRoot,
+                buildCanonicalBoneMap,
+                canonicalPoseSignature,
+              });
+              selectionDebug.push({
+                label: preferredAttempt.label,
+                bindingRoot: preferredAttempt.bindingRoot,
+                tracks: preferredAttempt.clip.tracks.length,
+                resolvedTracks: preferredAttempt.resolvedTracks,
+                mixers: preferredBindings.mixers.length,
+                probeAngle: Number(preferredProbe.maxAngle.toFixed(6)),
+                probePos: Number(preferredProbe.maxPos.toFixed(6)),
+                probeScore: Number(preferredProbe.score.toFixed(6)),
+                sampleTime: Number(preferredProbe.sampleTime.toFixed(3)),
+                poseError: Number.isFinite(preferredPoseError)
+                  ? Number(preferredPoseError.toFixed(6))
+                  : Number.POSITIVE_INFINITY,
+                ok: true,
+                forcedByProfile: true,
+              });
+              selectedAttempt = preferredAttempt;
+              selectedBindings = preferredBindings;
+              selectedProbe = preferredProbe;
+              selectedPoseError = preferredPoseError;
+            }
+          }
+        }
+
         if (
-          modelUsesPreferredRetargetHeuristics &&
+          preferSkeletonOnRenameFallback &&
           selectedAttempt?.label?.startsWith("rename-fallback") &&
           skeletonSkinned
         ) {
@@ -1952,19 +2718,29 @@
           isRenameFallback ||
           (
             selectedIsSkeletonUtils &&
-            modelUsesPreferredRetargetHeuristics &&
+            preferAggressiveLiveDelta &&
             (severeFacingPoseMismatch || (!fullHumanoidMatch && (highPoseError || strongFacingMismatch)))
           ) ||
           (!selectedIsSkeletonUtils && (strongFacingMismatch || weakMotion || highPoseError));
+        const profileForceLiveDelta =
+          typeof cachedRigProfile?.forceLiveDelta === "boolean" ? cachedRigProfile.forceLiveDelta : null;
         const forcedLiveDelta = getLiveDeltaOverride(window);
-        const useLiveDelta = forcedLiveDelta === null ? autoUseLiveDelta : forcedLiveDelta;
+        const useLiveDelta =
+          forcedLiveDelta === null
+            ? (profileForceLiveDelta === null ? autoUseLiveDelta : profileForceLiveDelta)
+            : forcedLiveDelta;
         diag("retarget-live-delta", {
           stage: retargetStage,
           selectedMode: selectedAttempt.label,
           selectedIsSkeletonUtils,
-          modelUsesPreferredRetargetHeuristics,
+          profilePolicy: {
+            preferSkeletonOnRenameFallback,
+            preferAggressiveLiveDelta,
+          },
           fullHumanoidMatch,
+          preferredMode: preferredMode || null,
           autoUseLiveDelta,
+          profileForced: profileForceLiveDelta,
           forced: forcedLiveDelta,
           useLiveDelta,
           reasons: {
@@ -1984,6 +2760,7 @@
             mixer,
             modelRoot,
             buildRestOrientationCorrection,
+            profile: cachedRigProfile,
           });
           if (directPlan && directPlan.pairs.length > 0) {
             liveRetarget = directPlan;
@@ -1996,40 +2773,50 @@
           }
         }
         if (!liveRetarget && selectedIsSkeletonUtils && !useLiveDelta) {
-          const yawCandidates = buildRootYawCandidates(rawFacingYaw, quantizeFacingYaw);
-          const yawEval = evaluateRootYawCandidates({
-            candidates: yawCandidates,
-            sampleTime: selectedProbe?.sampleTime || 0,
-            namesTargetToSource: names,
-            sourceClip: clip,
-            modelRoot,
-            modelMixers,
-            modelSkinnedMesh,
-            targetBones: retargetTargetBones,
-            sourceResult,
-            mixer,
-            resetModelRootOrientation,
-            applyModelRootYaw,
-            collectAlignmentDiagnostics: (args) =>
-              collectAlignmentDiagnostics({
-                ...args,
-                sourceOverlay,
-                overlayUpAxis: _overlayUpAxis,
-              }),
-          });
-          const zeroRow = yawEval.rows.find((r) => Math.abs(r.yawDeg) < 0.01) || null;
-          const bestRow = yawEval.rows[0] || null;
-          const bestIsLargeFlip = !!bestRow && Math.abs(bestRow.yawDeg) > 120;
+          const profileRootYawDeg =
+            Number.isFinite(cachedRigProfile?.rootYawDeg) ? cachedRigProfile.rootYawDeg : null;
+          let zeroRow = null;
+          let bestRow = null;
+          let shouldUseBest = false;
+          let yawEval = { rows: [], bestYaw: 0 };
           const rawYawLooksAligned = Math.abs(rawFacingYaw) < THREE.MathUtils.degToRad(30);
-          const shouldUseBest =
-            !!bestRow &&
-            !(rawYawLooksAligned && bestIsLargeFlip) &&
-            (
-              !zeroRow ||
-              bestRow.score + 0.03 < zeroRow.score ||
-              (Number.isFinite(bestRow.hipsPosErr) && Number.isFinite(zeroRow.hipsPosErr) && bestRow.hipsPosErr + 0.03 < zeroRow.hipsPosErr)
-            );
-          rootYawCorrection = applyModelRootYaw(shouldUseBest ? yawEval.bestYaw : 0);
+          if (Number.isFinite(profileRootYawDeg)) {
+            rootYawCorrection = applyModelRootYaw(THREE.MathUtils.degToRad(profileRootYawDeg));
+          } else {
+            const yawCandidates = buildRootYawCandidates(rawFacingYaw, quantizeFacingYaw);
+            yawEval = evaluateRootYawCandidates({
+              candidates: yawCandidates,
+              sampleTime: selectedProbe?.sampleTime || 0,
+              namesTargetToSource: names,
+              sourceClip: clip,
+              modelRoot,
+              modelMixers,
+              modelSkinnedMesh,
+              targetBones: retargetTargetBones,
+              sourceResult,
+              mixer,
+              resetModelRootOrientation,
+              applyModelRootYaw,
+              collectAlignmentDiagnostics: (args) =>
+                collectAlignmentDiagnostics({
+                  ...args,
+                  sourceOverlay,
+                  overlayUpAxis: _overlayUpAxis,
+                }),
+            });
+            zeroRow = yawEval.rows.find((r) => Math.abs(r.yawDeg) < 0.01) || null;
+            bestRow = yawEval.rows[0] || null;
+            const bestIsLargeFlip = !!bestRow && Math.abs(bestRow.yawDeg) > 120;
+            shouldUseBest =
+              !!bestRow &&
+              !(rawYawLooksAligned && bestIsLargeFlip) &&
+              (
+                !zeroRow ||
+                bestRow.score + 0.03 < zeroRow.score ||
+                (Number.isFinite(bestRow.hipsPosErr) && Number.isFinite(zeroRow.hipsPosErr) && bestRow.hipsPosErr + 0.03 < zeroRow.hipsPosErr)
+              );
+            rootYawCorrection = applyModelRootYaw(shouldUseBest ? yawEval.bestYaw : 0);
+          }
           if (sourceOverlay) {
             sourceOverlay.overlayYaw = 0;
             updateSourceOverlay();
@@ -2096,18 +2883,33 @@
             hipsCorrectionEval,
             strongFacingMismatch,
             usedBestCandidate: shouldUseBest,
+            usedProfileYaw: Number.isFinite(profileRootYawDeg),
             zeroCandidate: zeroRow,
             bestCandidate: bestRow,
             candidates: yawEval.rows,
           });
         }
-        if (!liveRetarget && useLiveDelta) {
-          const livePlan = buildLiveRetargetPlan(
+        const rebuildLiveRetargetPlan = () => {
+          if (preferVrmDirectBody) {
+            return buildVrmDirectBodyPlan({
+              targetBones: directRetargetTargetBones,
+              sourceBones: sourceResult.skeleton.bones,
+              namesTargetToSource: names,
+              mixer,
+              modelRoot,
+              buildRestOrientationCorrection,
+              profile: cachedRigProfile,
+            });
+          }
+          return buildLiveRetargetPlan(
             modelSkinnedMeshes,
             sourceResult.skeleton.bones,
             names,
             retargetTargetBones
           );
+        };
+        if (!liveRetarget && useLiveDelta) {
+          const livePlan = rebuildLiveRetargetPlan();
           if (livePlan && livePlan.pairs.length > 0) {
             liveRetarget = livePlan;
             if (sourceOverlay) {
@@ -2139,6 +2941,127 @@
         fingerLengthCalibration = null;
         let measureBodyErr = null;
         let bodyErrBaseline = null;
+        if (liveRetarget) {
+          const bodyEvalCanonical =
+            retargetStage === "body" ? RETARGET_BODY_CORE_CANONICAL : RETARGET_BODY_CANONICAL;
+          const bodyTargetBones = retargetTargetBones.filter((b) =>
+            bodyEvalCanonical.has(canonicalBoneKey(b.name) || "")
+          );
+          measureBodyErr = () => {
+            const report = collectAlignmentDiagnostics({
+              targetBones: bodyTargetBones.length ? bodyTargetBones : retargetTargetBones,
+              sourceBones: sourceResult.skeleton.bones,
+              namesTargetToSource: names,
+              sourceClip: clip,
+              maxRows: 5,
+              overlayYawOverride: 0,
+              sourceOverlay,
+              overlayUpAxis: _overlayUpAxis,
+            });
+            return Number.isFinite(report?.avgPosErrNorm) ? report.avgPosErrNorm : report?.avgPosErr;
+          };
+          const bodyErrBefore = measureBodyErr();
+          if (Number.isFinite(bodyErrBefore)) {
+            bodyErrBaseline = bodyErrBefore;
+          }
+          const attemptedBodyCalibration = buildBodyLengthCalibration(
+            sourceResult.skeleton.bones,
+            modelSkinnedMesh.skeleton.bones,
+            clip,
+            buildCanonicalBoneMap
+          );
+          const filteredBodyCalibration =
+            attemptedBodyCalibration && retargetStage === "body"
+              ? {
+                  ...attemptedBodyCalibration,
+                  entries: attemptedBodyCalibration.entries.filter((e) =>
+                    RETARGET_BODY_CORE_CANONICAL.has(e.canonical)
+                  ),
+                }
+              : attemptedBodyCalibration;
+          const suspiciousBodyScale =
+            !!filteredBodyCalibration &&
+            Number.isFinite(filteredBodyCalibration.globalScale) &&
+            (filteredBodyCalibration.globalScale < 0.2 || filteredBodyCalibration.globalScale > 5);
+          if (filteredBodyCalibration?.entries?.length && !suspiciousBodyScale) {
+            const previousLiveRetarget = liveRetarget;
+            applyBoneLengthCalibration(filteredBodyCalibration, modelRoot);
+            const rebuiltLiveRetarget = rebuildLiveRetargetPlan();
+            if (rebuiltLiveRetarget?.pairs?.length) {
+              liveRetarget = rebuiltLiveRetarget;
+              if (sourceOverlay) {
+                const effectiveOverlayYaw = rawFacingYaw + liveRetarget.yawOffset;
+                sourceOverlay.overlayYaw = Number.isFinite(effectiveOverlayYaw) ? effectiveOverlayYaw : 0;
+                updateSourceOverlay();
+              }
+              applyLiveRetargetPose(liveRetarget);
+            }
+            const bodyErrAfter = rebuiltLiveRetarget?.pairs?.length ? measureBodyErr() : null;
+            const hasBefore = Number.isFinite(bodyErrBefore);
+            const hasAfter = Number.isFinite(bodyErrAfter);
+            const keepCalibration =
+              !!rebuiltLiveRetarget?.pairs?.length &&
+              hasAfter &&
+              (!hasBefore || bodyErrAfter <= bodyErrBefore - 0.005);
+            if (!keepCalibration) {
+              resetBoneLengthCalibration(filteredBodyCalibration, modelRoot);
+              liveRetarget = previousLiveRetarget;
+              if (sourceOverlay) {
+                const effectiveOverlayYaw = rawFacingYaw + liveRetarget.yawOffset;
+                sourceOverlay.overlayYaw = Number.isFinite(effectiveOverlayYaw) ? effectiveOverlayYaw : 0;
+                updateSourceOverlay();
+              }
+              applyLiveRetargetPose(liveRetarget);
+              bodyLengthCalibration = null;
+            } else {
+              bodyLengthCalibration = filteredBodyCalibration;
+              if (Number.isFinite(bodyErrAfter)) {
+                bodyErrBaseline = bodyErrAfter;
+              }
+              selectedModeLabel = `${selectedModeLabel}+body-calib`;
+            }
+            diag("retarget-body-calibration", {
+              stage: retargetStage,
+              mode: "live-delta",
+              applied: keepCalibration,
+              bodyErrBefore: Number.isFinite(bodyErrBefore) ? Number(bodyErrBefore.toFixed(5)) : null,
+              bodyErrAfter: Number.isFinite(bodyErrAfter) ? Number(bodyErrAfter.toFixed(5)) : null,
+              metric: retargetStage === "body" ? "body-core" : "body-full",
+              bones: filteredBodyCalibration.entries.length,
+              globalScale: filteredBodyCalibration.globalScale,
+              clampedCount: filteredBodyCalibration.clampedCount,
+              sample: filteredBodyCalibration.entries.slice(0, 8).map((e) => ({
+                    canonical: e.canonical,
+                    scale: e.scale,
+                    rawScale: e.rawScale,
+                    sourceLen: e.sourceLen,
+                    targetLen: e.targetLen,
+                    expectedTargetLen: e.expectedTargetLen,
+                  })),
+            });
+          } else if (filteredBodyCalibration?.entries?.length) {
+            diag("retarget-body-calibration", {
+              stage: retargetStage,
+              mode: "live-delta",
+              applied: false,
+              skippedReason: "suspicious-global-scale",
+              bodyErrBefore: Number.isFinite(bodyErrBefore) ? Number(bodyErrBefore.toFixed(5)) : null,
+              bodyErrAfter: Number.isFinite(bodyErrBefore) ? Number(bodyErrBefore.toFixed(5)) : null,
+              metric: retargetStage === "body" ? "body-core" : "body-full",
+              bones: filteredBodyCalibration.entries.length,
+              globalScale: filteredBodyCalibration.globalScale,
+              clampedCount: filteredBodyCalibration.clampedCount,
+              sample: filteredBodyCalibration.entries.slice(0, 8).map((e) => ({
+                    canonical: e.canonical,
+                    scale: e.scale,
+                    rawScale: e.rawScale,
+                    sourceLen: e.sourceLen,
+                    targetLen: e.targetLen,
+                    expectedTargetLen: e.expectedTargetLen,
+                  })),
+            });
+          }
+        }
         if (!liveRetarget) {
           const bodyEvalCanonical =
             retargetStage === "body" ? RETARGET_BODY_CORE_CANONICAL : RETARGET_BODY_CANONICAL;
@@ -2465,10 +3388,26 @@
           rootYawDeg: Number((rootYawCorrection * 180 / Math.PI).toFixed(2)),
           yawOffsetDeg: liveRetarget ? Number((liveRetarget.yawOffset * 180 / Math.PI).toFixed(2)) : 0,
           calibratedPairs: liveRetarget ? liveRetarget.calibratedPairs || 0 : 0,
-          rigProfile: cachedRigProfile ? "hit" : "miss",
+          rigProfile: cachedRigProfile ? (cachedRigProfile.source || "hit") : "miss",
           rigProfileSaved,
           liveDelta: !!liveRetarget,
         });
+        dumpRestCorrectionLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
+        buildLegChainDiagnostics({
+          reason: `stage=${retargetStage} mode=${selectedModeLabel}`,
+          targetBones: retargetTargetBones,
+          sourceBones: sourceResult?.skeleton?.bones || [],
+          names: window.__vid2modelDebug?.names || {},
+        });
+        dumpLegChainDiagLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
+        buildFootChainDiagnostics({
+          reason: `stage=${retargetStage} mode=${selectedModeLabel}`,
+          targetBones: retargetTargetBones,
+          sourceBones: sourceResult?.skeleton?.bones || [],
+          names: window.__vid2modelDebug?.names || {},
+        });
+        dumpFootChainDiagLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
+        dumpFootCorrectionDebug(`stage=${retargetStage} mode=${selectedModeLabel}`);
         diag("retarget-limbs", {
           stage: retargetStage,
           mode: selectedModeLabel,
@@ -2561,6 +3500,55 @@
         overlayUpAxis: _overlayUpAxis,
         windowRef: window,
       });
+    window.__vid2modelDumpSkeleton = (scope = "legs") => {
+      const sourceBones = sourceResult?.skeleton?.bones || [];
+      const targetBones = getRetargetTargetBones(getRetargetStage(), { preferNormalized: false });
+      const names = window.__vid2modelDebug?.names || {};
+      const canonicals = resolveSkeletonDumpCanonicals(scope);
+      const rows = getSkeletonCanonicalRows({
+        targetBones,
+        sourceBones,
+        names,
+        canonicals,
+      });
+      window.__vid2modelSkeletonDump = rows;
+      console.log("[vid2model/diag] skeleton-dump", {
+        scope,
+        total: rows.length,
+        stage: getRetargetStage(),
+      });
+      console.table(rows);
+      return rows;
+    };
+    window.__vid2modelBoneLabels = { enabled: false, which: "both", scope: "legs" };
+    window.__vid2modelShowBoneLabels = (which = "both", scope = "legs") => {
+      const normalizedWhich = ["source", "target", "both"].includes(String(which || "").trim().toLowerCase())
+        ? String(which || "").trim().toLowerCase()
+        : "both";
+      const normalizedScope = String(scope || "legs").trim().toLowerCase();
+      window.__vid2modelBoneLabels = {
+        enabled: true,
+        which: normalizedWhich,
+        scope: normalizedScope,
+      };
+      refreshBoneLabels();
+      console.log("[vid2model/diag] bone-labels", {
+        enabled: true,
+        which: normalizedWhich,
+        scope: normalizedScope,
+      });
+      return window.__vid2modelBoneLabels;
+    };
+    window.__vid2modelHideBoneLabels = () => {
+      window.__vid2modelBoneLabels = { ...window.__vid2modelBoneLabels, enabled: false };
+      clearBoneLabels("both");
+      console.log("[vid2model/diag] bone-labels", { enabled: false });
+      return window.__vid2modelBoneLabels;
+    };
+    window.__vid2modelRefreshBoneLabels = () => {
+      refreshBoneLabels();
+      return window.__vid2modelBoneLabels;
+    };
     // Retarget stages:
     //   "body" (torso+arms+legs, no fingers) for base alignment debug
     //   "full" (includes fingers)
@@ -2585,9 +3573,6 @@
       console.log("[vid2model/diag] console mode:", next);
       return next;
     };
-    // Source skeleton labels:
-    //   window.__vid2modelShowBoneLabels = true | false
-    window.__vid2modelShowBoneLabels = true;
     // Optional manual override for troubleshooting:
     //   window.__vid2modelForceLiveDelta = true | false | null
     window.__vid2modelForceLiveDelta = null;
@@ -2698,6 +3683,7 @@
         syncSourceDisplayToModel();
       }
       fitToSkeleton(modelRoot);
+      refreshBoneLabels();
       setStatus(`Model loaded: ${label} (skinned meshes: ${modelSkinnedMeshes.length})`);
       if (vrm && modelRoot) {
         const token = modelDefaultAnimationToken;
@@ -2755,8 +3741,8 @@
     }
 
     async function loadDefaultModel() {
-      const defaultModelName = "MoonGirl.vrm";
-      const url = new URL("../models/MoonGirl.vrm", import.meta.url).href;
+      const defaultModelName = "6493143135142452442.glb";
+      const url = new URL("../models/6493143135142452442.glb", import.meta.url).href;
       modelFileNameEl.textContent = `${defaultModelName} (default)`;
       try {
         const res = await fetch(url);
@@ -2876,6 +3862,7 @@
         if (sourceOverlay) {
           updateSourceOverlay();
         }
+        updateBoneLabels();
 
         const duration = Math.max(getActiveDuration(), 1e-6);
       const refMixer = mixer || modelMixers[0] || modelMixer;
