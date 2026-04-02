@@ -23,6 +23,7 @@ from vid2model_lib import (
     rotation_align,
     write_bvh,
     write_csv,
+    write_diagnostic_json,
     write_json,
     write_npz,
     write_trc,

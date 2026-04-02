@@ -92,7 +92,7 @@ class CliValidationTests(unittest.TestCase):
             with patch("sys.argv", argv):
                 with patch(
                     "vid2model_lib.cli.convert_video_to_bvh",
-                    return_value=(30.0, {}, [[0.0] * 54], [0.0, 0.0, 0.0], []),
+                    return_value=(30.0, {}, [[0.0] * 54], [0.0, 0.0, 0.0], [], {}),
                 ) as mocked_convert:
                     with patch("vid2model_lib.cli.write_bvh") as mocked_write_bvh:
                         rc = cli.main()
@@ -216,6 +216,104 @@ class CliValidationTests(unittest.TestCase):
             with patch("sys.argv", argv):
                 with self.assertRaisesRegex(ValueError, "roi_crop must be one of"):
                     cli.main()
+
+    def test_invalid_loop_mode_from_config_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            config_path = tmp / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "input": str(video),
+                        "output_bvh": str(tmp / "out.bvh"),
+                        "loop_mode": "smart",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = ["convert_video_to_bvh.py", "--config", str(config_path)]
+            with patch("sys.argv", argv):
+                with self.assertRaisesRegex(ValueError, "loop_mode must be one of"):
+                    cli.main()
+
+    def test_loop_mode_is_forwarded_to_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            out_bvh = tmp / "out.bvh"
+            argv = [
+                "convert_video_to_bvh.py",
+                "--input",
+                str(video),
+                "--output-bvh",
+                str(out_bvh),
+                "--loop-mode",
+                "auto",
+            ]
+            with patch("sys.argv", argv):
+                with patch(
+                    "vid2model_lib.cli.convert_video_to_bvh",
+                    return_value=(30.0, {}, [[0.0] * 54], [0.0, 0.0, 0.0], [], {}),
+                ) as mocked_convert:
+                    with patch("vid2model_lib.cli.write_bvh"):
+                        rc = cli.main()
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(mocked_convert.call_args.kwargs["loop_mode"], "auto")
+
+    def test_loop_mode_force_is_forwarded_to_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            out_bvh = tmp / "out.bvh"
+            argv = [
+                "convert_video_to_bvh.py",
+                "--input",
+                str(video),
+                "--output-bvh",
+                str(out_bvh),
+                "--loop-mode",
+                "force",
+            ]
+            with patch("sys.argv", argv):
+                with patch(
+                    "vid2model_lib.cli.convert_video_to_bvh",
+                    return_value=(30.0, {}, [[0.0] * 54], [0.0, 0.0, 0.0], [], {}),
+                ) as mocked_convert:
+                    with patch("vid2model_lib.cli.write_bvh"):
+                        rc = cli.main()
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(mocked_convert.call_args.kwargs["loop_mode"], "force")
+
+    def test_output_diag_json_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            out_diag = tmp / "out.diag.json"
+            argv = [
+                "convert_video_to_bvh.py",
+                "--input",
+                str(video),
+                "--output-diag-json",
+                str(out_diag),
+            ]
+            with patch("sys.argv", argv):
+                with patch(
+                    "vid2model_lib.cli.convert_video_to_bvh",
+                    return_value=(30.0, {}, [[0.0] * 54], [0.0, 0.0, 0.0], [], {"ok": True}),
+                ):
+                    with patch("vid2model_lib.cli.write_diagnostic_json") as mocked_write_diag:
+                        rc = cli.main()
+
+            self.assertEqual(rc, 0)
+            mocked_write_diag.assert_called_once()
 
 
 if __name__ == "__main__":

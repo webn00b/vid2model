@@ -37,6 +37,9 @@ const LEG_LOCAL_CORRECTION_CANONICAL = new Set([
   "leftToes",
   "rightToes",
 ]);
+const _childDirV1 = new THREE.Vector3();
+const _childDirV2 = new THREE.Vector3();
+const _childDirQ1 = new THREE.Quaternion();
 
 function getBoneDepth(bone) {
   let depth = 0;
@@ -48,6 +51,51 @@ function getBoneDepth(bone) {
   return depth;
 }
 
+function getPrimaryChildDirectionLocal(bone) {
+  if (!bone?.isBone) return null;
+  bone.getWorldPosition(_childDirV1);
+  let bestChild = null;
+  let bestLenSq = 0;
+  for (const child of bone.children || []) {
+    if (!child?.isBone) continue;
+    child.getWorldPosition(_childDirV2);
+    const lenSq = _childDirV2.distanceToSquared(_childDirV1);
+    if (lenSq > bestLenSq) {
+      bestLenSq = lenSq;
+      bestChild = child;
+    }
+  }
+  if (!bestChild || bestLenSq < 1e-10) return null;
+  bestChild.getWorldPosition(_childDirV2);
+  const dir = new THREE.Vector3().copy(_childDirV2).sub(_childDirV1);
+  bone.getWorldQuaternion(_childDirQ1);
+  dir.applyQuaternion(_childDirQ1.invert());
+  if (dir.lengthSq() < 1e-10) return null;
+  return dir.normalize();
+}
+
+function buildLegChainPairs(pairs, side) {
+  if (!Array.isArray(pairs) || !side) return null;
+  const byCanonical = new Map(pairs.map((pair) => [pair.canonical, pair]));
+  const upper = byCanonical.get(`${side}UpperLeg`) || null;
+  const lower = byCanonical.get(`${side}LowerLeg`) || null;
+  const foot = byCanonical.get(`${side}Foot`) || null;
+  const toes = byCanonical.get(`${side}Toes`) || null;
+  if (!upper || !lower || !foot) return null;
+  return {
+    side,
+    upper,
+    lower,
+    foot,
+    toes,
+    enableUpperLegDirectionCorrection: false,
+    enableShinDirectionCorrection: false,
+    enableFootDirectionCorrection: false,
+    enableFootPlaneCorrection: false,
+    enableFootMirrorCorrection: false,
+  };
+}
+
 export function buildVrmDirectBodyPlan({
   targetBones,
   sourceBones,
@@ -55,6 +103,7 @@ export function buildVrmDirectBodyPlan({
   mixer,
   modelRoot,
   buildRestOrientationCorrection,
+  profile = null,
 }) {
   const sourceByName = new Map((sourceBones || []).map((b) => [b.name, b]));
   const pairs = [];
@@ -87,6 +136,9 @@ export function buildVrmDirectBodyPlan({
       hasRestCorrection: false,
       useParentRelativeRestDelta: false,
       useWorldRestTransfer: false,
+      invertRotationDeltaOverride: null,
+      targetPrimaryChildDirLocal: null,
+      sourcePrimaryChildDirLocal: null,
     });
   }
 
@@ -105,10 +157,26 @@ export function buildVrmDirectBodyPlan({
     pair.sourceRestWorldQInv.copy(pair.sourceRestWorldQ).invert();
     pair.targetRestPos.copy(pair.target.position);
     pair.sourceRestPos.copy(pair.source.position);
+    pair.targetPrimaryChildDirLocal = getPrimaryChildDirectionLocal(pair.target);
+    pair.sourcePrimaryChildDirLocal = getPrimaryChildDirectionLocal(pair.source);
   }
 
   for (const pair of pairs) {
     if (pair.isHips) continue;
+    const disableWorldRestTransfer = !!(
+      pair.canonical &&
+      profile?.disableWorldRestTransferByCanonical?.[pair.canonical]
+    );
+    const disableParentRelativeRestDelta = !!(
+      pair.canonical &&
+      profile?.disableParentRelativeRestDeltaByCanonical?.[pair.canonical]
+    );
+    if (
+      pair.canonical &&
+      typeof profile?.invertRotationDeltaByCanonical?.[pair.canonical] === "boolean"
+    ) {
+      pair.invertRotationDeltaOverride = profile.invertRotationDeltaByCanonical[pair.canonical];
+    }
     pair.source.getWorldQuaternion(pair.restCorrectionQInv);
     pair.target.getWorldQuaternion(pair.restWorldDeltaQ);
     pair.restWorldDeltaQ.premultiply(pair.restCorrectionQInv.invert()).normalize();
@@ -120,11 +188,15 @@ export function buildVrmDirectBodyPlan({
       pair.hasRestCorrection = true;
       continue;
     }
-    if (WORLD_REST_TRANSFER_CANONICAL.has(pair.canonical) && pair.target.parent) {
+    if (!disableWorldRestTransfer && WORLD_REST_TRANSFER_CANONICAL.has(pair.canonical) && pair.target.parent) {
       pair.useWorldRestTransfer = true;
       continue;
     }
-    if (PARENT_RELATIVE_REST_DELTA_CANONICAL.has(pair.canonical) && pair.target.parent) {
+    if (
+      !disableParentRelativeRestDelta &&
+      PARENT_RELATIVE_REST_DELTA_CANONICAL.has(pair.canonical) &&
+      pair.target.parent
+    ) {
       pair.useParentRelativeRestDelta = true;
       continue;
     }
@@ -153,8 +225,33 @@ export function buildVrmDirectBodyPlan({
   if (mixer) mixer.setTime(sourceTime);
   modelRoot?.updateMatrixWorld(true);
 
+  const legChains = [];
+  if (profile?.enableKneePlaneCorrectionBySide?.left) {
+    const leftChain = buildLegChainPairs(pairs, "left");
+    if (leftChain) {
+      leftChain.enableUpperLegDirectionCorrection = !!profile?.enableUpperLegDirectionCorrectionBySide?.left;
+      leftChain.enableShinDirectionCorrection = !!profile?.enableShinDirectionCorrectionBySide?.left;
+      leftChain.enableFootDirectionCorrection = !!profile?.enableFootDirectionCorrectionBySide?.left;
+      leftChain.enableFootPlaneCorrection = !!profile?.enableFootPlaneCorrectionBySide?.left;
+      leftChain.enableFootMirrorCorrection = !!profile?.enableFootMirrorCorrectionBySide?.left;
+      legChains.push(leftChain);
+    }
+  }
+  if (profile?.enableKneePlaneCorrectionBySide?.right) {
+    const rightChain = buildLegChainPairs(pairs, "right");
+    if (rightChain) {
+      rightChain.enableUpperLegDirectionCorrection = !!profile?.enableUpperLegDirectionCorrectionBySide?.right;
+      rightChain.enableShinDirectionCorrection = !!profile?.enableShinDirectionCorrectionBySide?.right;
+      rightChain.enableFootDirectionCorrection = !!profile?.enableFootDirectionCorrectionBySide?.right;
+      rightChain.enableFootPlaneCorrection = !!profile?.enableFootPlaneCorrectionBySide?.right;
+      rightChain.enableFootMirrorCorrection = !!profile?.enableFootMirrorCorrectionBySide?.right;
+      legChains.push(rightChain);
+    }
+  }
+
   return {
     pairs,
+    legChains,
     uniqueSkeletons: [{ bones: targetBones || [] }],
     posScale,
     yawOffset: 0,
