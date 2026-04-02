@@ -398,10 +398,63 @@ class PipelineGapFillingTests(unittest.TestCase):
         self.assertGreater(stats["applied"], 0.5)
         self.assertEqual(int(stats["overridden"]), 2)
         self.assertAlmostEqual(float(stats["scale_ratio"]), 12.5, places=6)
+        self.assertAlmostEqual(float(stats["group_scale_ratios"]["torso"]), 15.0, places=6)
+        self.assertAlmostEqual(float(stats["group_scale_ratios"]["left_leg"]), 10.0, places=6)
         self.assertAlmostEqual(float(stats["avg_blend"]), 0.75, places=6)
-        self.assertAlmostEqual(float(updated["spine"][1]), 27.5, places=6)
-        self.assertAlmostEqual(float(updated["leftUpperLeg"][0]), -7.5, places=6)
-        self.assertAlmostEqual(float(updated["leftUpperLeg"][2]), 2.5, places=6)
+        self.assertAlmostEqual(float(updated["spine"][1]), 30.0, places=6)
+        self.assertAlmostEqual(float(updated["leftUpperLeg"][0]), -6.0, places=6)
+        self.assertAlmostEqual(float(updated["leftUpperLeg"][2]), 2.0, places=6)
+
+    def test_skeleton_profile_uses_chain_aware_scale_ratios(self) -> None:
+        rest_offsets = {
+            "hips": np.array([0.0, 0.0, 0.0], dtype=np.float64),
+            "spine": np.array([0.0, 20.0, 0.0], dtype=np.float64),
+            "chest": np.array([0.0, 10.0, 0.0], dtype=np.float64),
+            "leftUpperLeg": np.array([-12.0, -24.0, 0.0], dtype=np.float64),
+            "rightUpperLeg": np.array([12.0, -24.0, 0.0], dtype=np.float64),
+        }
+        profile = {
+            "joint_blend": {
+                "spine": 1.0,
+                "chest": 1.0,
+                "leftUpperLeg": 1.0,
+                "rightUpperLeg": 1.0,
+            },
+            "joint_offsets": {
+                "spine": [0.0, 2.0, 0.0],
+                "chest": [0.0, 1.0, 0.0],
+                "leftUpperLeg": [-1.0, -2.0, 0.0],
+                "rightUpperLeg": [1.0, -2.0, 0.0],
+            },
+        }
+
+        updated, stats = pipeline.apply_skeleton_profile_to_rest_offsets(rest_offsets, profile)
+        self.assertGreater(stats["applied"], 0.5)
+        self.assertAlmostEqual(float(stats["group_scale_ratios"]["torso"]), 10.0, places=6)
+        self.assertAlmostEqual(float(stats["group_scale_ratios"]["left_leg"]), 12.0, places=6)
+        self.assertAlmostEqual(float(stats["group_scale_ratios"]["right_leg"]), 12.0, places=6)
+        self.assertAlmostEqual(float(updated["spine"][1]), 20.0, places=6)
+        self.assertAlmostEqual(float(updated["chest"][1]), 10.0, places=6)
+        self.assertAlmostEqual(float(updated["leftUpperLeg"][0]), -12.0, places=6)
+        self.assertAlmostEqual(float(updated["leftUpperLeg"][1]), -24.0, places=6)
+
+    def test_skeleton_profile_can_normalize_final_rest_offsets_to_vrm_humanoid_baseline(self) -> None:
+        rest_offsets = {
+            "hips": np.array([0.0, 0.0, 0.0], dtype=np.float64),
+            "spine": np.array([0.0, 20.0, 0.0], dtype=np.float64),
+            "chest": np.array([0.0, 10.0, 0.0], dtype=np.float64),
+            "upperChest": np.array([0.0, 6.0, 0.0], dtype=np.float64),
+            "neck": np.array([0.0, 12.0, 0.0], dtype=np.float64),
+            "head": np.array([0.0, 2.0, 0.0], dtype=np.float64),
+        }
+        profile = {"normalize_to_vrm_humanoid": True}
+
+        updated, stats = pipeline.apply_skeleton_profile_to_rest_offsets(rest_offsets, profile)
+        self.assertGreater(stats["humanoid_baseline_applied"], 0.5)
+        self.assertIn("torso", stats["humanoid_baseline_chains"])
+        total = sum(float(np.linalg.norm(updated[name])) for name in ("spine", "chest", "upperChest", "neck", "head"))
+        self.assertAlmostEqual(float(np.linalg.norm(updated["neck"])) / total, 0.14, places=3)
+        self.assertAlmostEqual(float(np.linalg.norm(updated["head"])) / total, 0.28, places=3)
 
     def test_blend_motion_loop_edges_reduces_first_last_gap(self) -> None:
         def make_frame(phase: float, edge_bias: float = 0.0) -> dict[str, np.ndarray]:
