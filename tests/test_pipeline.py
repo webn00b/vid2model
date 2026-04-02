@@ -4,6 +4,7 @@ import numpy as np
 
 from vid2model_lib.pipeline import build_pose_correction_profile, fill_pose_gaps
 from vid2model_lib import pipeline
+from vid2model_lib.pose_points import extract_pose_points, LM
 
 
 def pts(v: float) -> dict[str, np.ndarray]:
@@ -17,6 +18,109 @@ class PipelineGapFillingTests(unittest.TestCase):
         )
         self.assertTrue(pipeline._should_fallback_to_legacy_pose(exc))
         self.assertFalse(pipeline._should_fallback_to_legacy_pose(RuntimeError("plain failure")))
+
+    def test_extract_pose_points_builds_compact_neck_and_head_from_face_cluster(self) -> None:
+        class Landmark:
+            def __init__(self, x: float, y: float, z: float) -> None:
+                self.x = x
+                self.y = y
+                self.z = z
+
+        coords = [Landmark(0.5, 0.5, 0.0) for _ in range(33)]
+        coords[LM["left_shoulder"]] = Landmark(0.40, 0.45, 0.0)
+        coords[LM["right_shoulder"]] = Landmark(0.60, 0.45, 0.0)
+        coords[LM["left_hip"]] = Landmark(0.44, 0.62, 0.0)
+        coords[LM["right_hip"]] = Landmark(0.56, 0.62, 0.0)
+        coords[LM["nose"]] = Landmark(0.50, 0.30, 0.0)
+        coords[LM["left_eye"]] = Landmark(0.47, 0.31, 0.0)
+        coords[LM["right_eye"]] = Landmark(0.53, 0.31, 0.0)
+        coords[LM["left_ear"]] = Landmark(0.44, 0.33, 0.0)
+        coords[LM["right_ear"]] = Landmark(0.56, 0.33, 0.0)
+        coords[LM["left_elbow"]] = Landmark(0.34, 0.52, 0.0)
+        coords[LM["right_elbow"]] = Landmark(0.66, 0.52, 0.0)
+        coords[LM["left_wrist"]] = Landmark(0.28, 0.60, 0.0)
+        coords[LM["right_wrist"]] = Landmark(0.72, 0.60, 0.0)
+        coords[LM["left_pinky"]] = Landmark(0.26, 0.62, 0.0)
+        coords[LM["right_pinky"]] = Landmark(0.74, 0.62, 0.0)
+        coords[LM["left_index"]] = Landmark(0.27, 0.60, 0.0)
+        coords[LM["right_index"]] = Landmark(0.73, 0.60, 0.0)
+        coords[LM["left_thumb"]] = Landmark(0.27, 0.58, 0.0)
+        coords[LM["right_thumb"]] = Landmark(0.73, 0.58, 0.0)
+        coords[LM["left_knee"]] = Landmark(0.44, 0.78, 0.0)
+        coords[LM["right_knee"]] = Landmark(0.56, 0.78, 0.0)
+        coords[LM["left_ankle"]] = Landmark(0.44, 0.93, 0.0)
+        coords[LM["right_ankle"]] = Landmark(0.56, 0.93, 0.0)
+        coords[LM["left_heel"]] = Landmark(0.44, 0.94, -0.02)
+        coords[LM["right_heel"]] = Landmark(0.56, 0.94, -0.02)
+        coords[LM["left_foot_index"]] = Landmark(0.44, 0.93, 0.04)
+        coords[LM["right_foot_index"]] = Landmark(0.56, 0.93, 0.04)
+
+        class LandmarkList:
+            def __init__(self, landmark):
+                self.landmark = landmark
+
+        class Result:
+            pose_world_landmarks = None
+            pose_landmarks = LandmarkList(coords)
+
+        pts = extract_pose_points(Result())
+        self.assertIsNotNone(pts)
+        neck_len = float(np.linalg.norm(pts["neck"] - pts["upper_chest"]))
+        head_len = float(np.linalg.norm(pts["head"] - pts["neck"]))
+        self.assertLess(neck_len, head_len)
+        self.assertLess(neck_len, 6.0)
+
+    def test_extract_pose_points_uses_torso_and_face_to_push_neck_forward(self) -> None:
+        class Landmark:
+            def __init__(self, x: float, y: float, z: float) -> None:
+                self.x = x
+                self.y = y
+                self.z = z
+
+        coords = [Landmark(0.5, 0.5, 0.0) for _ in range(33)]
+        coords[LM["left_shoulder"]] = Landmark(0.40, 0.45, 0.0)
+        coords[LM["right_shoulder"]] = Landmark(0.60, 0.45, 0.0)
+        coords[LM["left_hip"]] = Landmark(0.44, 0.62, 0.0)
+        coords[LM["right_hip"]] = Landmark(0.56, 0.62, 0.0)
+        coords[LM["nose"]] = Landmark(0.50, 0.30, -0.10)
+        coords[LM["left_eye"]] = Landmark(0.47, 0.31, -0.08)
+        coords[LM["right_eye"]] = Landmark(0.53, 0.31, -0.08)
+        coords[LM["left_ear"]] = Landmark(0.44, 0.33, -0.04)
+        coords[LM["right_ear"]] = Landmark(0.56, 0.33, -0.04)
+        coords[LM["left_elbow"]] = Landmark(0.34, 0.52, 0.0)
+        coords[LM["right_elbow"]] = Landmark(0.66, 0.52, 0.0)
+        coords[LM["left_wrist"]] = Landmark(0.28, 0.60, 0.0)
+        coords[LM["right_wrist"]] = Landmark(0.72, 0.60, 0.0)
+        coords[LM["left_pinky"]] = Landmark(0.26, 0.62, 0.0)
+        coords[LM["right_pinky"]] = Landmark(0.74, 0.62, 0.0)
+        coords[LM["left_index"]] = Landmark(0.27, 0.60, 0.0)
+        coords[LM["right_index"]] = Landmark(0.73, 0.60, 0.0)
+        coords[LM["left_thumb"]] = Landmark(0.27, 0.58, 0.0)
+        coords[LM["right_thumb"]] = Landmark(0.73, 0.58, 0.0)
+        coords[LM["left_knee"]] = Landmark(0.44, 0.78, 0.0)
+        coords[LM["right_knee"]] = Landmark(0.56, 0.78, 0.0)
+        coords[LM["left_ankle"]] = Landmark(0.44, 0.93, 0.0)
+        coords[LM["right_ankle"]] = Landmark(0.56, 0.93, 0.0)
+        coords[LM["left_heel"]] = Landmark(0.44, 0.94, -0.02)
+        coords[LM["right_heel"]] = Landmark(0.56, 0.94, -0.02)
+        coords[LM["left_foot_index"]] = Landmark(0.44, 0.93, 0.04)
+        coords[LM["right_foot_index"]] = Landmark(0.56, 0.93, 0.04)
+
+        class LandmarkList:
+            def __init__(self, landmark):
+                self.landmark = landmark
+
+        class Result:
+            pose_world_landmarks = None
+            pose_landmarks = LandmarkList(coords)
+
+        pose = extract_pose_points(Result())
+        self.assertIsNotNone(pose)
+        upper_to_neck = pose["neck"] - pose["upper_chest"]
+        neck_to_head = pose["head"] - pose["neck"]
+        self.assertGreater(float(upper_to_neck[1]), 0.0)
+        self.assertGreater(float(upper_to_neck[2]), 0.0)
+        self.assertGreater(float(neck_to_head[2]), 0.0)
 
     def test_mirror_detection_and_grounding(self) -> None:
         sample = {
@@ -276,10 +380,14 @@ class PipelineGapFillingTests(unittest.TestCase):
     def test_skeleton_profile_overrides_rest_offsets(self) -> None:
         rest_offsets = {
             "hips": np.array([0.0, 0.0, 0.0], dtype=np.float64),
-            "spine": np.array([0.0, 20.0, 0.0], dtype=np.float64),
+            "spine": np.array([0.0, 30.0, 0.0], dtype=np.float64),
             "leftUpperLeg": np.array([-6.0, -16.0, 2.0], dtype=np.float64),
         }
         profile = {
+            "joint_blend": {
+                "spine": 0.5,
+                "leftUpperLeg": 1.0,
+            },
             "joint_offsets": {
                 "spine": [0.0, 2.0, 0.0],
                 "leftUpperLeg": [-0.6, -1.6, 0.2],
@@ -289,10 +397,11 @@ class PipelineGapFillingTests(unittest.TestCase):
         updated, stats = pipeline.apply_skeleton_profile_to_rest_offsets(rest_offsets, profile)
         self.assertGreater(stats["applied"], 0.5)
         self.assertEqual(int(stats["overridden"]), 2)
-        self.assertAlmostEqual(float(stats["scale_ratio"]), 10.0, places=6)
-        self.assertAlmostEqual(float(updated["spine"][1]), 20.0, places=6)
-        self.assertAlmostEqual(float(updated["leftUpperLeg"][0]), -6.0, places=6)
-        self.assertAlmostEqual(float(updated["leftUpperLeg"][2]), 2.0, places=6)
+        self.assertAlmostEqual(float(stats["scale_ratio"]), 12.5, places=6)
+        self.assertAlmostEqual(float(stats["avg_blend"]), 0.75, places=6)
+        self.assertAlmostEqual(float(updated["spine"][1]), 27.5, places=6)
+        self.assertAlmostEqual(float(updated["leftUpperLeg"][0]), -7.5, places=6)
+        self.assertAlmostEqual(float(updated["leftUpperLeg"][2]), 2.5, places=6)
 
     def test_blend_motion_loop_edges_reduces_first_last_gap(self) -> None:
         def make_frame(phase: float, edge_bias: float = 0.0) -> dict[str, np.ndarray]:

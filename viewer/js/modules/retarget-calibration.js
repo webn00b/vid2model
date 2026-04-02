@@ -35,11 +35,14 @@ function fingerScaleLimits(canonical) {
 }
 
 function bodyScaleLimits(canonical) {
-  if (canonical === "spine" || canonical === "chest" || canonical === "upperChest") {
+  if (canonical === "spine" || canonical === "chest") {
     return { min: 0.82, max: 1.22 };
   }
+  if (canonical === "upperChest") {
+    return { min: 0.35, max: 1.45 };
+  }
   if (canonical === "neck" || canonical === "head") {
-    return { min: 0.85, max: 1.2 };
+    return { min: 0.2, max: 1.8 };
   }
   if (canonical === "leftShoulder" || canonical === "rightShoulder") {
     return { min: 0.55, max: 1.35 };

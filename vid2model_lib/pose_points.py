@@ -7,6 +7,10 @@ import numpy as np
 
 LM = {
     "nose": 0,
+    "left_eye": 2,
+    "right_eye": 5,
+    "left_ear": 7,
+    "right_ear": 8,
     "left_shoulder": 11,
     "right_shoulder": 12,
     "left_elbow": 13,
@@ -32,6 +36,12 @@ LM = {
 }
 
 
+def _average_points(points: list[np.ndarray]) -> np.ndarray:
+    if not points:
+        return np.zeros(3, dtype=np.float64)
+    return np.mean(np.stack(points, axis=0), axis=0)
+
+
 def _first_landmark_list(payload):
     if payload is None:
         return None
@@ -50,6 +60,19 @@ def _safe_normalized(vec: np.ndarray, fallback: np.ndarray) -> np.ndarray:
     if fallback_norm > 1e-8:
         return fallback / fallback_norm
     return np.array([1.0, 0.0, 0.0], dtype=np.float64)
+
+
+def _blend_directions(*weighted_dirs: tuple[np.ndarray, float], fallback: np.ndarray) -> np.ndarray:
+    accum = np.zeros(3, dtype=np.float64)
+    total_weight = 0.0
+    for direction, weight in weighted_dirs:
+        if weight <= 0.0:
+            continue
+        accum += np.array(direction, dtype=np.float64) * weight
+        total_weight += weight
+    if total_weight <= 1e-8:
+        return _safe_normalized(fallback, fallback)
+    return _safe_normalized(accum / total_weight, fallback)
 
 
 def _build_hand_points(side: str, pts: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
@@ -139,6 +162,10 @@ def extract_pose_points(res) -> Optional[Dict[str, np.ndarray]]:
     pts = {
         "left_shoulder": point(LM["left_shoulder"]),
         "right_shoulder": point(LM["right_shoulder"]),
+        "left_eye": point(LM["left_eye"]),
+        "right_eye": point(LM["right_eye"]),
+        "left_ear": point(LM["left_ear"]),
+        "right_ear": point(LM["right_ear"]),
         "left_elbow": point(LM["left_elbow"]),
         "right_elbow": point(LM["right_elbow"]),
         "left_wrist": point(LM["left_wrist"]),
@@ -168,13 +195,55 @@ def extract_pose_points(res) -> Optional[Dict[str, np.ndarray]]:
     pts["mid_hip"] = (pts["left_hip"] + pts["right_hip"]) * 0.5
     pts["spine"] = (pts["mid_hip"] + (pts["left_shoulder"] + pts["right_shoulder"]) * 0.5) * 0.5
     pts["chest"] = (pts["left_shoulder"] + pts["right_shoulder"]) * 0.5
-    pts["neck"] = (pts["chest"] + pts["nose"]) * 0.5
-    pts["upper_chest"] = (pts["chest"] + pts["neck"]) * 0.5
     pts["left_shoulder_clavicle"] = pts["chest"] + (pts["left_shoulder"] - pts["chest"]) * 0.35
     pts["right_shoulder_clavicle"] = pts["chest"] + (pts["right_shoulder"] - pts["chest"]) * 0.35
-    pts["head"] = pts["nose"]
 
     shoulder_width = np.linalg.norm(pts["left_shoulder"] - pts["right_shoulder"])
+    face_points = [
+        pts["nose"],
+        pts["left_eye"],
+        pts["right_eye"],
+        pts["left_ear"],
+        pts["right_ear"],
+    ]
+    eye_center = _average_points([pts["left_eye"], pts["right_eye"]])
+    ear_center = _average_points([pts["left_ear"], pts["right_ear"]])
+    face_center = _average_points(face_points)
+    torso_up = _safe_normalized(pts["chest"] - pts["mid_hip"], np.array([0.0, 1.0, 0.0], dtype=np.float64))
+    shoulder_axis = _safe_normalized(
+        pts["right_shoulder"] - pts["left_shoulder"],
+        np.array([1.0, 0.0, 0.0], dtype=np.float64),
+    )
+    face_hint = _safe_normalized(face_center - pts["chest"], torso_up)
+    torso_forward = _safe_normalized(np.cross(shoulder_axis, torso_up), face_hint)
+    if float(np.dot(torso_forward, face_hint)) < 0.0:
+        torso_forward = -torso_forward
+
+    upper_chest_dir = _blend_directions(
+        (torso_up, 0.7),
+        (torso_forward, 0.3),
+        fallback=torso_up,
+    )
+    neck_anchor = _average_points([eye_center, ear_center])
+    neck_dir = _blend_directions(
+        (_safe_normalized(neck_anchor - pts["chest"], upper_chest_dir), 0.55),
+        (upper_chest_dir, 0.45),
+        fallback=upper_chest_dir,
+    )
+    head_anchor = _average_points([pts["nose"], eye_center, ear_center])
+    head_dir = _blend_directions(
+        (_safe_normalized(head_anchor - neck_anchor, neck_dir), 0.18),
+        (neck_dir, 0.82),
+        fallback=neck_dir,
+    )
+
+    upper_chest_len = shoulder_width * 0.04
+    neck_len = shoulder_width * 0.06
+    head_len = shoulder_width * 0.10
+    pts["upper_chest"] = pts["chest"] + upper_chest_dir * upper_chest_len
+    pts["neck"] = pts["upper_chest"] + neck_dir * neck_len
+    pts["head"] = pts["neck"] + head_dir * head_len
+
     if shoulder_width > 1e-6:
         scale = 35.0 / shoulder_width
         for key in pts:

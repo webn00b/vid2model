@@ -134,6 +134,8 @@
     let sourceAxesDebug = null;
     let restCorrectionLog = [];
     let legChainDiagLog = [];
+    let armChainDiagLog = [];
+    let torsoChainDiagLog = [];
     let footChainDiagLog = [];
     let boneLabelDebug = {
       source: null,
@@ -550,6 +552,176 @@
       };
     }
 
+    function maybeSwapArmSidesByChain(baseResult, targetBones, sourceBones, canonicalFilter) {
+      if (!baseResult?.names) return { ...baseResult, mirroredArmSidesApplied: false };
+      const targetMap = buildCanonicalBoneMap(targetBones || []);
+      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
+      const armCanonicals = [
+        "leftShoulder",
+        "leftUpperArm",
+        "leftLowerArm",
+        "leftHand",
+        "rightShoulder",
+        "rightUpperArm",
+        "rightLowerArm",
+        "rightHand",
+      ];
+      const fingerPrefixes = ["Thumb", "Index", "Middle", "Ring", "Little"];
+      for (const side of ["left", "right"]) {
+        for (const finger of fingerPrefixes) {
+          armCanonicals.push(`${side}${finger}Metacarpal`);
+          armCanonicals.push(`${side}${finger}Proximal`);
+          armCanonicals.push(`${side}${finger}Intermediate`);
+          armCanonicals.push(`${side}${finger}Distal`);
+        }
+      }
+
+      let assignmentSameVotes = 0;
+      let assignmentSwappedVotes = 0;
+      let majorChainSwappedVotes = 0;
+      let majorChainTotal = 0;
+      for (const bone of targetBones || []) {
+        const canonical = canonicalBoneKey(bone.name) || "";
+        if (!canonical || !armCanonicals.includes(canonical)) continue;
+        if (canonicalFilter && !canonicalFilter.has(canonical)) continue;
+        const mappedSourceName = baseResult.names?.[bone.name] || "";
+        const mappedCanonical = canonicalBoneKey(mappedSourceName) || "";
+        if (!mappedCanonical) continue;
+        if (
+          (canonical.startsWith("left") && mappedCanonical.startsWith("left")) ||
+          (canonical.startsWith("right") && mappedCanonical.startsWith("right"))
+        ) {
+          assignmentSameVotes += 1;
+        } else if (
+          (canonical.startsWith("left") && mappedCanonical.startsWith("right")) ||
+          (canonical.startsWith("right") && mappedCanonical.startsWith("left"))
+        ) {
+          assignmentSwappedVotes += 1;
+          if (
+            canonical.endsWith("UpperArm") ||
+            canonical.endsWith("LowerArm") ||
+            canonical.endsWith("Hand")
+          ) {
+            majorChainSwappedVotes += 1;
+          }
+        }
+        if (
+          canonical.endsWith("UpperArm") ||
+          canonical.endsWith("LowerArm") ||
+          canonical.endsWith("Hand")
+        ) {
+          majorChainTotal += 1;
+        }
+      }
+
+      const segmentAngle = (a0, a1, b0, b1) => {
+        if (!a0 || !a1 || !b0 || !b1) return null;
+        return angleBetweenWorldSegments(a0, a1, b0, b1);
+      };
+      const scoreArmPair = (targetSide, sourceSide) => {
+        const targetUpper = targetMap.get(`${targetSide}UpperArm`) || null;
+        const targetLower = targetMap.get(`${targetSide}LowerArm`) || null;
+        const targetHand = targetMap.get(`${targetSide}Hand`) || null;
+        const sourceUpper = sourceMap.get(`${sourceSide}UpperArm`) || null;
+        const sourceLower = sourceMap.get(`${sourceSide}LowerArm`) || null;
+        const sourceHand = sourceMap.get(`${sourceSide}Hand`) || null;
+        if (!targetUpper || !targetLower || !targetHand || !sourceUpper || !sourceLower || !sourceHand) return null;
+
+        const t0 = new THREE.Vector3();
+        const t1 = new THREE.Vector3();
+        const t2 = new THREE.Vector3();
+        const s0 = new THREE.Vector3();
+        const s1 = new THREE.Vector3();
+        const s2 = new THREE.Vector3();
+        targetUpper.getWorldPosition(t0);
+        targetLower.getWorldPosition(t1);
+        targetHand.getWorldPosition(t2);
+        sourceUpper.getWorldPosition(s0);
+        sourceLower.getWorldPosition(s1);
+        sourceHand.getWorldPosition(s2);
+
+        const angles = [
+          segmentAngle(t0, t1, s0, s1),
+          segmentAngle(t1, t2, s1, s2),
+        ].filter((value) => Number.isFinite(value));
+        if (!angles.length) return null;
+        return angles.reduce((sum, value) => sum + value, 0) / angles.length;
+      };
+
+      const sameScores = [
+        scoreArmPair("left", "left"),
+        scoreArmPair("right", "right"),
+      ].filter((value) => Number.isFinite(value));
+      const swappedScores = [
+        scoreArmPair("left", "right"),
+        scoreArmPair("right", "left"),
+      ].filter((value) => Number.isFinite(value));
+      const sameAvg = sameScores.length
+        ? sameScores.reduce((sum, value) => sum + value, 0) / sameScores.length
+        : null;
+      const swappedAvg = swappedScores.length
+        ? swappedScores.reduce((sum, value) => sum + value, 0) / swappedScores.length
+        : null;
+      const shouldSwapByAssignments =
+        assignmentSwappedVotes >= 4 && assignmentSwappedVotes > assignmentSameVotes;
+      const shouldSwapByMajorChain =
+        majorChainTotal >= 6 && majorChainSwappedVotes >= 4;
+      const shouldSwapByGeometry =
+        Number.isFinite(sameAvg) &&
+        Number.isFinite(swappedAvg) &&
+        swappedAvg + 15 < sameAvg;
+      if (!shouldSwapByAssignments && !shouldSwapByMajorChain && !shouldSwapByGeometry) {
+        return {
+          ...baseResult,
+          mirroredArmSidesApplied: false,
+          armSideSwapScore: {
+            assignmentSameVotes,
+            assignmentSwappedVotes,
+            majorChainSwappedVotes,
+            majorChainTotal,
+            sameAvg: Number.isFinite(sameAvg) ? Number(sameAvg.toFixed(3)) : null,
+            swappedAvg: Number.isFinite(swappedAvg) ? Number(swappedAvg.toFixed(3)) : null,
+          },
+        };
+      }
+
+      const sourceByCanonical = new Map();
+      for (const bone of sourceBones || []) {
+        const canonical = canonicalBoneKey(bone.name) || "";
+        if (canonical) sourceByCanonical.set(canonical, bone.name);
+      }
+      const swapCanonical = (canonical) => {
+        if (canonical.startsWith("left")) return `right${canonical.slice(4)}`;
+        if (canonical.startsWith("right")) return `left${canonical.slice(5)}`;
+        return canonical;
+      };
+
+      const names = { ...(baseResult.names || {}) };
+      for (const bone of targetBones || []) {
+        const canonical = canonicalBoneKey(bone.name) || "";
+        if (!canonical) continue;
+        if (!armCanonicals.includes(canonical)) continue;
+        if (canonicalFilter && !canonicalFilter.has(canonical)) continue;
+        const swapped = swapCanonical(canonical);
+        const sourceName = sourceByCanonical.get(swapped);
+        if (sourceName) names[bone.name] = sourceName;
+      }
+
+      return {
+        ...baseResult,
+        names,
+        mirroredArmSidesApplied: true,
+        armSideSwapScore: {
+          assignmentSameVotes,
+          assignmentSwappedVotes,
+          majorChainSwappedVotes,
+          majorChainTotal,
+          sameAvg: Number.isFinite(sameAvg) ? Number(sameAvg.toFixed(3)) : null,
+          swappedAvg: Number.isFinite(swappedAvg) ? Number(swappedAvg.toFixed(3)) : null,
+        },
+      };
+    }
+
     function quantizeFacingYaw(rad) {
       if (!Number.isFinite(rad)) return 0;
       const abs = Math.abs(rad);
@@ -601,6 +773,16 @@
     function resetLegChainDiagLog() {
       legChainDiagLog = [];
       window.__vid2modelLegChainDiag = legChainDiagLog;
+    }
+
+    function resetArmChainDiagLog() {
+      armChainDiagLog = [];
+      window.__vid2modelArmChainDiag = armChainDiagLog;
+    }
+
+    function resetTorsoChainDiagLog() {
+      torsoChainDiagLog = [];
+      window.__vid2modelTorsoChainDiag = torsoChainDiagLog;
     }
 
     function resetFootChainDiagLog() {
@@ -671,8 +853,40 @@
       return normal.normalize();
     }
 
+    function getPreferredChildBone(bone) {
+      if (!bone?.isBone) return null;
+      const canonical = canonicalBoneKey(bone.name) || "";
+      const children = (bone.children || []).filter((child) => child?.isBone);
+      if (!children.length) return null;
+
+      if (canonical === "leftHand" || canonical === "rightHand") {
+        const preferredFingerRoots = [
+          canonical.replace("Hand", "MiddleProximal"),
+          canonical.replace("Hand", "IndexProximal"),
+          canonical.replace("Hand", "RingProximal"),
+          canonical.replace("Hand", "LittleProximal"),
+          canonical.replace("Hand", "ThumbMetacarpal"),
+          canonical.replace("Hand", "ThumbProximal"),
+        ];
+        for (const preferred of preferredFingerRoots) {
+          const match = children.find((child) => (canonicalBoneKey(child.name) || "") === preferred);
+          if (match) return match;
+        }
+      }
+
+      if (canonical === "leftFoot" || canonical === "rightFoot") {
+        const preferredToes = canonical.replace("Foot", "Toes");
+        const match = children.find((child) => (canonicalBoneKey(child.name) || "") === preferredToes);
+        if (match) return match;
+      }
+
+      return null;
+    }
+
     function getPrimaryChildBone(bone) {
       if (!bone?.isBone) return null;
+      const preferred = getPreferredChildBone(bone);
+      if (preferred) return preferred;
       bone.getWorldPosition(_tmpWorldPosA);
       let bestChild = null;
       let bestLenSq = 0;
@@ -793,6 +1007,240 @@
       });
       if (!isVerboseDiagMode() && !suspicious.length) return;
       console.log("[vid2model/diag] leg-chain", {
+        reason,
+        total: rows.length,
+        suspicious: suspicious.length,
+      });
+      if (isVerboseDiagMode()) {
+        console.table(rows);
+      } else if (suspicious.length) {
+        console.table(suspicious);
+      }
+    }
+
+    function buildArmChainDiagnostics({ targetBones = [], sourceBones = [], names = {}, reason = "retarget" } = {}) {
+      const targetMap = buildCanonicalBoneMap(targetBones || []);
+      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
+      const rows = [];
+      const armSides = ["left", "right"];
+      for (const side of armSides) {
+        const upperKey = `${side}UpperArm`;
+        const lowerKey = `${side}LowerArm`;
+        const handKey = `${side}Hand`;
+        const targetUpper = targetMap.get(upperKey) || null;
+        const targetLower = targetMap.get(lowerKey) || null;
+        const targetHand = targetMap.get(handKey) || null;
+        if (!targetUpper || !targetLower || !targetHand) continue;
+
+        const mappedUpperCanonical = canonicalBoneKey(names[targetUpper.name] || upperKey) || upperKey;
+        const mappedLowerCanonical = canonicalBoneKey(names[targetLower.name] || lowerKey) || lowerKey;
+        const mappedHandCanonical = canonicalBoneKey(names[targetHand.name] || handKey) || handKey;
+
+        const sourceUpper = sourceMap.get(mappedUpperCanonical) || null;
+        const sourceLower = sourceMap.get(mappedLowerCanonical) || null;
+        const sourceHand = sourceMap.get(mappedHandCanonical) || null;
+        if (!sourceUpper || !sourceLower || !sourceHand) continue;
+
+        const targetUpperPos = new THREE.Vector3();
+        const targetLowerPos = new THREE.Vector3();
+        const targetHandPos = new THREE.Vector3();
+        const sourceUpperPos = new THREE.Vector3();
+        const sourceLowerPos = new THREE.Vector3();
+        const sourceHandPos = new THREE.Vector3();
+        const targetHandChild = getPrimaryChildBone(targetHand);
+        const sourceHandChild = getPrimaryChildBone(sourceHand);
+        const targetHandChildPos = targetHandChild ? new THREE.Vector3() : null;
+        const sourceHandChildPos = sourceHandChild ? new THREE.Vector3() : null;
+
+        targetUpper.getWorldPosition(targetUpperPos);
+        targetLower.getWorldPosition(targetLowerPos);
+        targetHand.getWorldPosition(targetHandPos);
+        if (targetHandChild && targetHandChildPos) targetHandChild.getWorldPosition(targetHandChildPos);
+        sourceUpper.getWorldPosition(sourceUpperPos);
+        sourceLower.getWorldPosition(sourceLowerPos);
+        sourceHand.getWorldPosition(sourceHandPos);
+        if (sourceHandChild && sourceHandChildPos) sourceHandChild.getWorldPosition(sourceHandChildPos);
+
+        const targetBendNormal = computeBendNormal(targetUpperPos, targetLowerPos, targetHandPos);
+        const sourceBendNormal = computeBendNormal(sourceUpperPos, sourceLowerPos, sourceHandPos);
+        const bendDot =
+          targetBendNormal && sourceBendNormal
+            ? Number(targetBendNormal.dot(sourceBendNormal).toFixed(4))
+            : null;
+        const bendAngleDeg =
+          targetBendNormal && sourceBendNormal
+            ? Number(THREE.MathUtils.radToDeg(targetBendNormal.angleTo(sourceBendNormal)).toFixed(3))
+            : null;
+
+        rows.push({
+          side,
+          reason,
+          target: {
+            upper: targetUpper.name,
+            lower: targetLower.name,
+            hand: targetHand.name,
+            handChild: targetHandChild?.name || null,
+          },
+          source: {
+            upper: sourceUpper.name,
+            lower: sourceLower.name,
+            hand: sourceHand.name,
+            handChild: sourceHandChild?.name || null,
+          },
+          sourceCanonical: {
+            upper: mappedUpperCanonical,
+            lower: mappedLowerCanonical,
+            hand: mappedHandCanonical,
+          },
+          upperAngleDeg: angleBetweenWorldSegments(targetUpperPos, targetLowerPos, sourceUpperPos, sourceLowerPos),
+          lowerAngleDeg: angleBetweenWorldSegments(targetLowerPos, targetHandPos, sourceLowerPos, sourceHandPos),
+          handAngleDeg:
+            targetHandChildPos && sourceHandChildPos
+              ? angleBetweenWorldSegments(targetHandPos, targetHandChildPos, sourceHandPos, sourceHandChildPos)
+              : null,
+          bendAngleDeg,
+          bendDot,
+          bendMirrored: bendDot != null ? bendDot < 0 : null,
+          targetBendNormal: toRoundedVec3(targetBendNormal),
+          sourceBendNormal: toRoundedVec3(sourceBendNormal),
+        });
+      }
+      armChainDiagLog = rows;
+      window.__vid2modelArmChainDiag = rows;
+      return rows;
+    }
+
+    function dumpArmChainDiagLog(reason = "retarget") {
+      const rows = Array.isArray(armChainDiagLog) ? armChainDiagLog.slice() : [];
+      window.__vid2modelArmChainDiag = rows;
+      if (!rows.length) return;
+      const suspicious = rows.filter((row) => {
+        const segmentWorst = Math.max(row.upperAngleDeg || 0, row.lowerAngleDeg || 0, row.handAngleDeg || 0);
+        return row.bendMirrored === true || segmentWorst >= 90 || (row.bendAngleDeg || 0) >= 90;
+      });
+      if (!isVerboseDiagMode() && !suspicious.length) return;
+      console.log("[vid2model/diag] arm-chain", {
+        reason,
+        total: rows.length,
+        suspicious: suspicious.length,
+      });
+      if (isVerboseDiagMode()) {
+        console.table(rows);
+      } else if (suspicious.length) {
+        console.table(suspicious);
+      }
+    }
+
+    function buildTorsoChainDiagnostics({ targetBones = [], sourceBones = [], names = {}, reason = "retarget" } = {}) {
+      const targetMap = buildCanonicalBoneMap(targetBones || []);
+      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
+      const rows = [];
+      const chain = [
+        ["hips", "spine"],
+        ["spine", "chest"],
+        ["chest", "upperChest"],
+        ["upperChest", "neck"],
+        ["neck", "head"],
+      ];
+      for (const [startKey, endKey] of chain) {
+        const targetStart = targetMap.get(startKey) || null;
+        const targetEnd = targetMap.get(endKey) || null;
+        if (!targetStart || !targetEnd) continue;
+        const mappedStartCanonical = canonicalBoneKey(names[targetStart.name] || startKey) || startKey;
+        const mappedEndCanonical = canonicalBoneKey(names[targetEnd.name] || endKey) || endKey;
+        const sourceStart = sourceMap.get(mappedStartCanonical) || null;
+        const sourceEnd = sourceMap.get(mappedEndCanonical) || null;
+        if (!sourceStart || !sourceEnd) continue;
+
+        const targetStartPos = new THREE.Vector3();
+        const targetEndPos = new THREE.Vector3();
+        const sourceStartPos = new THREE.Vector3();
+        const sourceEndPos = new THREE.Vector3();
+        targetStart.getWorldPosition(targetStartPos);
+        targetEnd.getWorldPosition(targetEndPos);
+        sourceStart.getWorldPosition(sourceStartPos);
+        sourceEnd.getWorldPosition(sourceEndPos);
+
+        const targetDir = new THREE.Vector3().subVectors(targetEndPos, targetStartPos).normalize();
+        const sourceDir = new THREE.Vector3().subVectors(sourceEndPos, sourceStartPos).normalize();
+        const segmentAngleDeg = angleBetweenWorldSegments(targetStartPos, targetEndPos, sourceStartPos, sourceEndPos);
+        const segmentDot =
+          targetDir.lengthSq() > 1e-10 && sourceDir.lengthSq() > 1e-10
+            ? Number(targetDir.dot(sourceDir).toFixed(4))
+            : null;
+        const targetLen = targetEndPos.distanceTo(targetStartPos);
+        const sourceLen = sourceEndPos.distanceTo(sourceStartPos);
+        const lengthRatio = targetLen > 1e-6 && sourceLen > 1e-6 ? Number((targetLen / sourceLen).toFixed(4)) : null;
+
+        rows.push({
+          reason,
+          segment: `${startKey}->${endKey}`,
+          target: {
+            start: targetStart.name,
+            end: targetEnd.name,
+          },
+          source: {
+            start: sourceStart.name,
+            end: sourceEnd.name,
+          },
+          sourceCanonical: {
+            start: mappedStartCanonical,
+            end: mappedEndCanonical,
+          },
+          segmentAngleDeg,
+          segmentDot,
+          targetLen: Number(targetLen.toFixed(5)),
+          sourceLen: Number(sourceLen.toFixed(5)),
+          lengthRatio,
+          targetDir: toRoundedVec3(targetDir),
+          sourceDir: toRoundedVec3(sourceDir),
+        });
+      }
+      const targetLeftShoulder = targetMap.get("leftShoulder") || null;
+      const targetRightShoulder = targetMap.get("rightShoulder") || null;
+      const sourceLeftShoulder = sourceMap.get("leftShoulder") || null;
+      const sourceRightShoulder = sourceMap.get("rightShoulder") || null;
+      if (targetLeftShoulder && targetRightShoulder && sourceLeftShoulder && sourceRightShoulder) {
+        const tls = new THREE.Vector3();
+        const trs = new THREE.Vector3();
+        const sls = new THREE.Vector3();
+        const srs = new THREE.Vector3();
+        targetLeftShoulder.getWorldPosition(tls);
+        targetRightShoulder.getWorldPosition(trs);
+        sourceLeftShoulder.getWorldPosition(sls);
+        sourceRightShoulder.getWorldPosition(srs);
+        rows.push({
+          reason,
+          segment: "shoulder-span",
+          target: { start: targetLeftShoulder.name, end: targetRightShoulder.name },
+          source: { start: sourceLeftShoulder.name, end: sourceRightShoulder.name },
+          sourceCanonical: { start: "leftShoulder", end: "rightShoulder" },
+          segmentAngleDeg: angleBetweenWorldSegments(tls, trs, sls, srs),
+          segmentDot: null,
+          targetLen: Number(tls.distanceTo(trs).toFixed(5)),
+          sourceLen: Number(sls.distanceTo(srs).toFixed(5)),
+          lengthRatio:
+            tls.distanceTo(trs) > 1e-6 && sls.distanceTo(srs) > 1e-6
+              ? Number((tls.distanceTo(trs) / sls.distanceTo(srs)).toFixed(4))
+              : null,
+          targetDir: toRoundedVec3(new THREE.Vector3().subVectors(trs, tls).normalize()),
+          sourceDir: toRoundedVec3(new THREE.Vector3().subVectors(srs, sls).normalize()),
+        });
+      }
+      torsoChainDiagLog = rows;
+      window.__vid2modelTorsoChainDiag = rows;
+      return rows;
+    }
+
+    function dumpTorsoChainDiagLog(reason = "retarget") {
+      const rows = Array.isArray(torsoChainDiagLog) ? torsoChainDiagLog.slice() : [];
+      window.__vid2modelTorsoChainDiag = rows;
+      if (!rows.length) return;
+      const suspicious = rows.filter((row) => {
+        return (row.segmentAngleDeg || 0) >= 45 || (row.lengthRatio != null && (row.lengthRatio > 1.35 || row.lengthRatio < 0.75));
+      });
+      if (!isVerboseDiagMode() && !suspicious.length) return;
+      console.log("[vid2model/diag] torso-chain", {
         reason,
         total: rows.length,
         suspicious: suspicious.length,
@@ -1150,6 +1598,30 @@
 
     function resolveSkeletonDumpCanonicals(scope = "legs") {
       const normalized = String(scope || "legs").trim().toLowerCase();
+      if (normalized === "left-arm" || normalized === "arm-left") {
+        return ["leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand"];
+      }
+      if (normalized === "right-arm" || normalized === "arm-right") {
+        return ["rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand"];
+      }
+      if (normalized === "arms") {
+        return [
+          "leftShoulder",
+          "leftUpperArm",
+          "leftLowerArm",
+          "leftHand",
+          "rightShoulder",
+          "rightUpperArm",
+          "rightLowerArm",
+          "rightHand",
+        ];
+      }
+      if (normalized === "torso") {
+        return ["hips", "spine", "chest", "upperChest", "neck", "head"];
+      }
+      if (normalized === "head") {
+        return ["upperChest", "neck", "head"];
+      }
       if (normalized === "left" || normalized === "left-leg") {
         return ["leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes"];
       }
@@ -1162,6 +1634,14 @@
           "spine",
           "chest",
           "upperChest",
+          "leftShoulder",
+          "leftUpperArm",
+          "leftLowerArm",
+          "leftHand",
+          "rightShoulder",
+          "rightUpperArm",
+          "rightLowerArm",
+          "rightHand",
           "leftUpperLeg",
           "leftLowerLeg",
           "leftFoot",
@@ -1624,6 +2104,17 @@
     function getPrimaryChildDirectionLocal(bone, outDir) {
       if (!bone || !outDir) return false;
       bone.getWorldPosition(_calibV1);
+      const preferredChild = getPreferredChildBone(bone);
+      if (preferredChild) {
+        preferredChild.getWorldPosition(_calibV2);
+        outDir.copy(_calibV2).sub(_calibV1);
+        bone.getWorldQuaternion(_calibQ1);
+        outDir.applyQuaternion(_calibQ1.invert());
+        if (outDir.lengthSq() >= 1e-10) {
+          outDir.normalize();
+          return true;
+        }
+      }
       let bestChild = null;
       let bestLenSq = 0;
       for (const child of bone.children || []) {
@@ -2282,6 +2773,8 @@
       try {
         resetRestCorrectionLog();
         resetLegChainDiagLog();
+        resetArmChainDiagLog();
+        resetTorsoChainDiagLog();
         resetFootChainDiagLog();
         const retargetStage = getRetargetStage();
         const cachedRigProfile = loadRigProfile(modelRigFingerprint, retargetStage, modelLabel);
@@ -2354,7 +2847,7 @@
             : mirrorSwapMode === "force" || mirrorSwapMode === "enable"
               ? true
               : true;
-        const activeMapResult = allowMirrorSwap
+        const mirroredMapResult = allowMirrorSwap
           ? maybeSwapMirroredHumanoidSides(
               profiledMapResult,
               retargetTargetBones,
@@ -2362,6 +2855,25 @@
               canonicalFilter
             )
           : { ...profiledMapResult, mirroredSidesApplied: false };
+        const armSideSwapMode = String(cachedRigProfile?.armSideSwap || "").trim().toLowerCase();
+        const allowArmSideSwap =
+          armSideSwapMode === "disable"
+            ? false
+            : armSideSwapMode === "force" || armSideSwapMode === "enable"
+              ? true
+              : true;
+        const activeMapResult = allowArmSideSwap
+          ? maybeSwapArmSidesByChain(
+              mirroredMapResult,
+              retargetTargetBones,
+              sourceResult.skeleton.bones,
+              canonicalFilter
+            )
+          : {
+              ...mirroredMapResult,
+              mirroredArmSidesApplied: false,
+              armSideSwapScore: null,
+            };
         const {
           names,
           matched,
@@ -2380,6 +2892,10 @@
           uniqueSourceMapped: sourceMatched,
           humanoidMatched: canonicalCandidates > 0 ? `${matched}/${canonicalCandidates}` : "n/a",
           mirrorSwap: allowMirrorSwap ? (mirrorSwapMode || "auto") : "disable",
+          armSideSwap: allowArmSideSwap ? (armSideSwapMode || "auto") : "disable",
+          mirroredSidesApplied: !!activeMapResult.mirroredSidesApplied,
+          mirroredArmSidesApplied: !!activeMapResult.mirroredArmSidesApplied,
+          armSideSwapScore: activeMapResult.armSideSwapScore || null,
         });
         diag("retarget-topology-fallback", {
           stage: retargetStage,
@@ -3400,6 +3916,20 @@
           names: window.__vid2modelDebug?.names || {},
         });
         dumpLegChainDiagLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
+        buildArmChainDiagnostics({
+          reason: `stage=${retargetStage} mode=${selectedModeLabel}`,
+          targetBones: retargetTargetBones,
+          sourceBones: sourceResult?.skeleton?.bones || [],
+          names: window.__vid2modelDebug?.names || {},
+        });
+        dumpArmChainDiagLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
+        buildTorsoChainDiagnostics({
+          reason: `stage=${retargetStage} mode=${selectedModeLabel}`,
+          targetBones: retargetTargetBones,
+          sourceBones: sourceResult?.skeleton?.bones || [],
+          names: window.__vid2modelDebug?.names || {},
+        });
+        dumpTorsoChainDiagLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
         buildFootChainDiagnostics({
           reason: `stage=${retargetStage} mode=${selectedModeLabel}`,
           targetBones: retargetTargetBones,
@@ -3592,6 +4122,40 @@
       console.log("[vid2model/diag] file logger disabled");
     };
 
+    function buildDefaultSkeletonProfileBlend() {
+      const out = {};
+      for (const joint of VRM_HUMANOID_BONE_NAMES) {
+        let blend = 1.0;
+        if (joint === "hips") blend = 0.85;
+        else if (joint === "spine") blend = 0.55;
+        else if (joint === "chest") blend = 0.45;
+        else if (joint === "upperChest") blend = 0.4;
+        else if (joint === "neck" || joint === "head") blend = 0.5;
+        else if (joint.includes("Shoulder")) blend = 0.35;
+        else if (joint.includes("UpperArm")) blend = 0.3;
+        else if (joint.includes("LowerArm")) blend = 0.25;
+        else if (joint.includes("Hand")) blend = 0.2;
+        else if (
+          joint.includes("Thumb") ||
+          joint.includes("Index") ||
+          joint.includes("Middle") ||
+          joint.includes("Ring") ||
+          joint.includes("Little")
+        ) {
+          blend = 0.12;
+        } else if (
+          joint.includes("UpperLeg") ||
+          joint.includes("LowerLeg") ||
+          joint.includes("Foot") ||
+          joint.includes("Toes")
+        ) {
+          blend = 1.0;
+        }
+        out[joint] = blend;
+      }
+      return out;
+    }
+
     function applyParsedModel(gltf, label) {
       clearModel();
       const vrm = gltf.userData?.vrm || null;
@@ -3740,6 +4304,7 @@
         modelLabel,
         modelFingerprint: modelRigFingerprint,
         joint_offsets: jointOffsets,
+        joint_blend: buildDefaultSkeletonProfileBlend(),
       };
     }
 

@@ -9,6 +9,9 @@ MAX_PYTHON_MINOR=10
 OPENCV_ENHANCE="${OPENCV_ENHANCE:-off}"
 MAX_FRAME_SIDE="${MAX_FRAME_SIDE:-0}"
 ROI_CROP="${ROI_CROP:-off}"
+UPPER_ROTATION_OFFSET_DEG="${UPPER_ROTATION_OFFSET_DEG:-0}"
+UPPER_BODY_ROTATION_SCALE="${UPPER_BODY_ROTATION_SCALE:-1}"
+ARM_ROTATION_SCALE="${ARM_ROTATION_SCALE:-1}"
 ROOT_YAW_OFFSET_DEG="${ROOT_YAW_OFFSET_DEG:-0}"
 LOWER_BODY_ROTATION_MODE="${LOWER_BODY_ROTATION_MODE:-off}"
 LOOP_MODE="${LOOP_MODE:-off}"
@@ -82,6 +85,9 @@ Environment knobs:
   OPENCV_ENHANCE=off|light|strong   OpenCV pre-processing before pose detection.
   MAX_FRAME_SIDE=0|N                Resize frame so longest side <= N (0 disables).
   ROI_CROP=off|auto                 Adaptive person ROI crop between frames.
+  UPPER_ROTATION_OFFSET_DEG=0|180   Extra Y rotation offset for upper body only.
+  UPPER_BODY_ROTATION_SCALE=1|0.35  Keep only a fraction of torso/arm rotation.
+  ARM_ROTATION_SCALE=1|0.15         Keep only a fraction of arm/hand rotation.
   ROOT_YAW_OFFSET_DEG=0|180|-90     Extra source root yaw offset in degrees.
   LOWER_BODY_ROTATION_MODE=off|invert|yaw180  Extra lower-body source rotation correction.
   LOOP_MODE=off|auto|force          Extract a cyclic loop window from the cleaned motion.
@@ -204,6 +210,15 @@ if [[ -n "$ROI_CROP" ]]; then
 fi
 if [[ -n "$ROOT_YAW_OFFSET_DEG" ]]; then
   CMD+=(--root-yaw-offset-deg "$ROOT_YAW_OFFSET_DEG")
+fi
+if [[ -n "$UPPER_ROTATION_OFFSET_DEG" ]]; then
+  CMD+=(--upper-rotation-offset-deg "$UPPER_ROTATION_OFFSET_DEG")
+fi
+if [[ -n "$UPPER_BODY_ROTATION_SCALE" ]]; then
+  CMD+=(--upper-body-rotation-scale "$UPPER_BODY_ROTATION_SCALE")
+fi
+if [[ -n "$ARM_ROTATION_SCALE" ]]; then
+  CMD+=(--arm-rotation-scale "$ARM_ROTATION_SCALE")
 fi
 if [[ -n "$LOWER_BODY_ROTATION_MODE" ]]; then
   CMD+=(--lower-body-rotation-mode "$LOWER_BODY_ROTATION_MODE")
