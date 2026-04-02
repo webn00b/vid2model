@@ -5,6 +5,7 @@ import json
 import importlib.util
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict
 
@@ -44,6 +45,9 @@ def parse_args() -> argparse.Namespace:
         help="Adaptive ROI crop around detected person between frames.",
     )
     parser.add_argument("--progress-every", type=int, help="Print progress every N frames (0 disables).")
+    parser.add_argument("--upper-rotation-offset-deg", type=float, help="Extra Y rotation offset for upper body in degrees.")
+    parser.add_argument("--upper-body-rotation-scale", type=float, help="Scale upper-body BVH rotations (e.g. 0.35 keeps 35% of torso/arm rotation).")
+    parser.add_argument("--arm-rotation-scale", type=float, help="Scale arm and hand BVH rotations separately from torso (e.g. 0.15).")
     parser.add_argument("--root-yaw-offset-deg", type=float, help="Extra source root yaw offset in degrees.")
     parser.add_argument(
         "--lower-body-rotation-mode",
@@ -140,6 +144,12 @@ def main() -> int:
     lower_body_rotation_mode = str(merged("lower_body_rotation_mode", "off")).strip().lower()
     loop_mode = str(merged("loop_mode", "off")).strip().lower()
     pose_corrections = build_pose_correction_profile(cfg.get("pose_corrections"))
+    upper_rotation_offset_deg = float(merged("upper_rotation_offset_deg", pose_corrections.upper_rotation_offset_deg))
+    upper_body_rotation_scale = float(merged("upper_body_rotation_scale", pose_corrections.upper_body_rotation_scale))
+    arm_rotation_scale = float(merged("arm_rotation_scale", pose_corrections.arm_rotation_scale))
+    pose_corrections = replace(pose_corrections, upper_rotation_offset_deg=upper_rotation_offset_deg)
+    pose_corrections = replace(pose_corrections, upper_body_rotation_scale=upper_body_rotation_scale)
+    pose_corrections = replace(pose_corrections, arm_rotation_scale=arm_rotation_scale)
 
     if model_complexity not in (0, 1, 2):
         raise ValueError("model_complexity must be one of: 0, 1, 2")

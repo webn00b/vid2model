@@ -25,6 +25,8 @@ class PoseCorrectionProfile:
     use_leg_ik: bool = True
     body_bend_reduction_power: float = 0.5
     upper_rotation_offset_deg: float = 0.0
+    upper_body_rotation_scale: float = 1.0
+    arm_rotation_scale: float = 1.0
     arm_horizontal_offset_percent: float = 0.0
     arm_vertical_offset_percent: float = 0.0
     hip_depth_scale_percent: float = 100.0
@@ -94,6 +96,14 @@ def build_pose_correction_profile(data: Optional[Dict[str, Any]] = None) -> Pose
         upper_rotation_offset_deg=as_float(
             data.get("upper_rotation_offset_deg", data.get("upper_rotation_offset")),
             DEFAULT_POSE_CORRECTIONS.upper_rotation_offset_deg,
+        ),
+        upper_body_rotation_scale=as_float(
+            data.get("upper_body_rotation_scale"),
+            DEFAULT_POSE_CORRECTIONS.upper_body_rotation_scale,
+        ),
+        arm_rotation_scale=as_float(
+            data.get("arm_rotation_scale"),
+            DEFAULT_POSE_CORRECTIONS.arm_rotation_scale,
         ),
         arm_horizontal_offset_percent=as_float(
             data.get("arm_horizontal_offset_percent"), DEFAULT_POSE_CORRECTIONS.arm_horizontal_offset_percent
@@ -1295,6 +1305,88 @@ def apply_lower_body_rotation_mode(
     return adjusted
 
 
+def apply_upper_body_rotation_scale(
+    motion_values: List[List[float]],
+    scale: float,
+    arm_scale: Optional[float] = None,
+) -> List[List[float]]:
+    if not motion_values:
+        return motion_values
+    if not np.isfinite(scale):
+        return motion_values
+    scale = float(scale)
+    arm_scale = scale if arm_scale is None or not np.isfinite(arm_scale) else float(arm_scale)
+    if abs(scale - 1.0) < 1e-6 and abs(arm_scale - 1.0) < 1e-6:
+        return motion_values
+
+    joint_names = [joint.name for joint in JOINTS]
+    torso_joints = {
+        "spine",
+        "chest",
+        "upperChest",
+        "neck",
+        "head",
+    }
+    arm_joints = {
+        "leftShoulder",
+        "rightShoulder",
+        "leftUpperArm",
+        "rightUpperArm",
+        "leftLowerArm",
+        "rightLowerArm",
+        "leftHand",
+        "rightHand",
+        "leftThumbMetacarpal",
+        "leftThumbProximal",
+        "leftThumbDistal",
+        "leftIndexProximal",
+        "leftIndexIntermediate",
+        "leftIndexDistal",
+        "leftMiddleProximal",
+        "leftMiddleIntermediate",
+        "leftMiddleDistal",
+        "leftRingProximal",
+        "leftRingIntermediate",
+        "leftRingDistal",
+        "leftLittleProximal",
+        "leftLittleIntermediate",
+        "leftLittleDistal",
+        "rightThumbMetacarpal",
+        "rightThumbProximal",
+        "rightThumbDistal",
+        "rightIndexProximal",
+        "rightIndexIntermediate",
+        "rightIndexDistal",
+        "rightMiddleProximal",
+        "rightMiddleIntermediate",
+        "rightMiddleDistal",
+        "rightRingProximal",
+        "rightRingIntermediate",
+        "rightRingDistal",
+        "rightLittleProximal",
+        "rightLittleIntermediate",
+        "rightLittleDistal",
+    }
+    adjusted: List[List[float]] = []
+    for frame in motion_values:
+        updated = list(frame)
+        for joint_index, joint_name in enumerate(joint_names[1:], start=1):
+            if joint_name in torso_joints:
+                joint_scale = scale
+            elif joint_name in arm_joints:
+                joint_scale = arm_scale
+            else:
+                continue
+            base = 6 + (joint_index - 1) * 3
+            if base + 2 >= len(updated):
+                continue
+            updated[base] = float(updated[base]) * joint_scale
+            updated[base + 1] = float(updated[base + 1]) * joint_scale
+            updated[base + 2] = float(updated[base + 2]) * joint_scale
+        adjusted.append(updated)
+    return adjusted
+
+
 def build_rest_offsets(samples: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
     rest: Dict[str, np.ndarray] = {}
     if not samples:
@@ -1354,6 +1446,7 @@ def apply_skeleton_profile_to_rest_offsets(
         return rest_offsets, {"applied": 0.0, "overridden": 0.0}
 
     offsets_raw = skeleton_profile.get("joint_offsets") if isinstance(skeleton_profile, dict) else None
+    blend_raw = skeleton_profile.get("joint_blend") if isinstance(skeleton_profile, dict) else None
     if not isinstance(offsets_raw, dict):
         return rest_offsets, {"applied": 0.0, "overridden": 0.0}
 
@@ -1388,14 +1481,24 @@ def apply_skeleton_profile_to_rest_offsets(
             scale_ratio = 1.0
 
     overridden = 0
+    blend_sum = 0.0
     for joint_name, vec in raw_vectors.items():
-        out[joint_name] = vec * scale_ratio
+        scaled = vec * scale_ratio
+        blend = 1.0
+        if isinstance(blend_raw, dict):
+            raw_blend = blend_raw.get(joint_name)
+            if isinstance(raw_blend, (int, float)) and np.isfinite(float(raw_blend)):
+                blend = float(np.clip(float(raw_blend), 0.0, 1.0))
+        rest_vec = rest_offsets.get(joint_name, scaled)
+        out[joint_name] = rest_vec * (1.0 - blend) + scaled * blend
         overridden += 1
+        blend_sum += blend
 
     return out, {
         "applied": 1.0 if overridden > 0 else 0.0,
         "overridden": float(overridden),
         "scale_ratio": float(scale_ratio),
+        "avg_blend": float(blend_sum / overridden) if overridden > 0 else 0.0,
         "model_label": str(skeleton_profile.get("modelLabel", "")) if isinstance(skeleton_profile, dict) else "",
         "model_fingerprint": str(skeleton_profile.get("modelFingerprint", "")) if isinstance(skeleton_profile, dict) else "",
     }
@@ -2601,6 +2704,22 @@ def convert_video_to_bvh(
     if str(lower_body_rotation_mode or "off").strip().lower() != "off":
         motion_values = apply_lower_body_rotation_mode(motion_values, lower_body_rotation_mode)
         print(f"[vid2model] lower_body_rotation mode={str(lower_body_rotation_mode).strip().lower()}", file=sys.stderr)
+    if (
+        (np.isfinite(corrections.upper_body_rotation_scale) and abs(float(corrections.upper_body_rotation_scale) - 1.0) > 1e-6)
+        or (np.isfinite(corrections.arm_rotation_scale) and abs(float(corrections.arm_rotation_scale) - 1.0) > 1e-6)
+    ):
+        motion_values = apply_upper_body_rotation_scale(
+            motion_values,
+            corrections.upper_body_rotation_scale,
+            corrections.arm_rotation_scale,
+        )
+        print(
+            (
+                f"[vid2model] upper_body_rotation_scale={float(corrections.upper_body_rotation_scale):.3f} "
+                f"arm_rotation_scale={float(corrections.arm_rotation_scale):.3f}"
+            ),
+            file=sys.stderr,
+        )
     motion_values, unwrap_stats = unwrap_motion_rotation_channels(motion_values)
     if unwrap_stats["applied"] > 0.5:
         print(
@@ -2629,6 +2748,8 @@ def convert_video_to_bvh(
             "normalized_applied": float(yaw_norm_stats["applied"]),
             "normalized_offset_deg": float(yaw_norm_stats["offset_deg"]),
             "manual_offset_deg": float(root_yaw_offset_deg),
+            "upper_body_rotation_scale": float(corrections.upper_body_rotation_scale),
+            "arm_rotation_scale": float(corrections.arm_rotation_scale),
         },
         "skeleton_profile": {
             key: float(value) if isinstance(value, (int, float)) else value

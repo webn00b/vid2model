@@ -291,6 +291,66 @@ class CliValidationTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(mocked_convert.call_args.kwargs["loop_mode"], "force")
 
+    def test_upper_body_rotation_scale_is_forwarded_to_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            out_bvh = tmp / "out.bvh"
+            argv = [
+                "convert_video_to_bvh.py",
+                "--input",
+                str(video),
+                "--output-bvh",
+                str(out_bvh),
+                "--upper-body-rotation-scale",
+                "0.35",
+            ]
+            with patch("sys.argv", argv):
+                with patch(
+                    "vid2model_lib.cli.convert_video_to_bvh",
+                    return_value=(30.0, {}, [[0.0] * 54], [0.0, 0.0, 0.0], [], {}),
+                ) as mocked_convert:
+                    with patch("vid2model_lib.cli.write_bvh"):
+                        rc = cli.main()
+
+            self.assertEqual(rc, 0)
+            self.assertAlmostEqual(
+                mocked_convert.call_args.kwargs["pose_corrections"].upper_body_rotation_scale,
+                0.35,
+                places=6,
+            )
+
+    def test_arm_rotation_scale_is_forwarded_to_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            out_bvh = tmp / "out.bvh"
+            argv = [
+                "convert_video_to_bvh.py",
+                "--input",
+                str(video),
+                "--output-bvh",
+                str(out_bvh),
+                "--arm-rotation-scale",
+                "0.15",
+            ]
+            with patch("sys.argv", argv):
+                with patch(
+                    "vid2model_lib.cli.convert_video_to_bvh",
+                    return_value=(30.0, {}, [[0.0] * 54], [0.0, 0.0, 0.0], [], {}),
+                ) as mocked_convert:
+                    with patch("vid2model_lib.cli.write_bvh"):
+                        rc = cli.main()
+
+            self.assertEqual(rc, 0)
+            self.assertAlmostEqual(
+                mocked_convert.call_args.kwargs["pose_corrections"].arm_rotation_scale,
+                0.15,
+                places=6,
+            )
+
     def test_output_diag_json_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)

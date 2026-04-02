@@ -1,0 +1,322 @@
+{
+  "format": "vid2model.skeleton-profile.v1",
+  "generatedAt": "2026-04-02T16:38:13.330Z",
+  "modelLabel": "6493143135142452442.glb",
+  "modelFingerprint": "rig:729cb56b",
+  "joint_offsets": {
+    "hips": [
+      0,
+      0.879429,
+      -0.004328
+    ],
+    "spine": [
+      0,
+      0.0503,
+      -0.011657
+    ],
+    "chest": [
+      0,
+      0.10299,
+      -0.003044
+    ],
+    "upperChest": [
+      0,
+      0.097818,
+      0.013286
+    ],
+    "neck": [
+      0,
+      0.118098,
+      0.034242
+    ],
+    "head": [
+      0,
+      0.069641,
+      -0.00874
+    ],
+    "leftShoulder": [
+      -0.019856,
+      0.09435,
+      0.026754
+    ],
+    "rightShoulder": [
+      0.019856,
+      0.09435,
+      0.026754
+    ],
+    "leftUpperArm": [
+      -0.061071,
+      -0.00875,
+      0
+    ],
+    "rightUpperArm": [
+      0.061071,
+      -0.00875,
+      0
+    ],
+    "leftLowerArm": [
+      -0.245305,
+      0,
+      0
+    ],
+    "rightLowerArm": [
+      0.245305,
+      0,
+      0
+    ],
+    "leftHand": [
+      -0.219359,
+      0,
+      -0.000385
+    ],
+    "rightHand": [
+      0.219359,
+      0,
+      -0.000385
+    ],
+    "leftUpperLeg": [
+      -0.068409,
+      -0.035508,
+      0.003264
+    ],
+    "rightUpperLeg": [
+      0.068409,
+      -0.035508,
+      0.003264
+    ],
+    "leftLowerLeg": [
+      0,
+      -0.343082,
+      0.00718
+    ],
+    "rightLowerLeg": [
+      0,
+      -0.343082,
+      0.00718
+    ],
+    "leftFoot": [
+      0.000075,
+      -0.385327,
+      0.023267
+    ],
+    "rightFoot": [
+      -0.000075,
+      -0.385327,
+      0.023267
+    ],
+    "leftToes": [
+      0,
+      -0.060237,
+      -0.105743
+    ],
+    "rightToes": [
+      0,
+      -0.060237,
+      -0.105743
+    ],
+    "leftThumbMetacarpal": [
+      -0.002951,
+      -0.008439,
+      -0.013461
+    ],
+    "leftThumbProximal": [
+      -0.029625,
+      -0.001739,
+      -0.025518
+    ],
+    "leftThumbDistal": [
+      -0.018896,
+      -0.000818,
+      -0.014883
+    ],
+    "leftIndexProximal": [
+      -0.054839,
+      0.006223,
+      -0.016575
+    ],
+    "leftIndexIntermediate": [
+      -0.027856,
+      0,
+      0.000545
+    ],
+    "leftIndexDistal": [
+      -0.017134,
+      -0.000499,
+      0.000665
+    ],
+    "leftMiddleProximal": [
+      -0.055586,
+      0.006223,
+      -0.001726
+    ],
+    "leftMiddleIntermediate": [
+      -0.031034,
+      0,
+      0
+    ],
+    "leftMiddleDistal": [
+      -0.019146,
+      0,
+      0
+    ],
+    "leftRingProximal": [
+      -0.054953,
+      0.006223,
+      0.011458
+    ],
+    "leftRingIntermediate": [
+      -0.028788,
+      0,
+      0
+    ],
+    "leftRingDistal": [
+      -0.016614,
+      0,
+      0
+    ],
+    "leftLittleProximal": [
+      -0.051169,
+      0.006223,
+      0.024602
+    ],
+    "leftLittleIntermediate": [
+      -0.026332,
+      0,
+      0
+    ],
+    "leftLittleDistal": [
+      -0.015176,
+      0,
+      0
+    ],
+    "rightThumbMetacarpal": [
+      0.002951,
+      -0.008439,
+      -0.013461
+    ],
+    "rightThumbProximal": [
+      0.029625,
+      -0.001739,
+      -0.025518
+    ],
+    "rightThumbDistal": [
+      0.018896,
+      -0.000818,
+      -0.014883
+    ],
+    "rightIndexProximal": [
+      0.054839,
+      0.006223,
+      -0.016575
+    ],
+    "rightIndexIntermediate": [
+      0.027856,
+      0,
+      0.000545
+    ],
+    "rightIndexDistal": [
+      0.017134,
+      -0.000499,
+      0.000665
+    ],
+    "rightMiddleProximal": [
+      0.055586,
+      0.006223,
+      -0.001726
+    ],
+    "rightMiddleIntermediate": [
+      0.031034,
+      0,
+      0
+    ],
+    "rightMiddleDistal": [
+      0.019146,
+      0,
+      0
+    ],
+    "rightRingProximal": [
+      0.054953,
+      0.006223,
+      0.011458
+    ],
+    "rightRingIntermediate": [
+      0.028788,
+      0,
+      0
+    ],
+    "rightRingDistal": [
+      0.016614,
+      0,
+      0
+    ],
+    "rightLittleProximal": [
+      0.051169,
+      0.006223,
+      0.024602
+    ],
+    "rightLittleIntermediate": [
+      0.026332,
+      0,
+      0
+    ],
+    "rightLittleDistal": [
+      0.015176,
+      0,
+      0
+    ]
+  },
+  "joint_blend": {
+    "hips": 0.85,
+    "spine": 0.55,
+    "chest": 0.45,
+    "upperChest": 0.4,
+    "neck": 0.5,
+    "head": 0.5,
+    "leftShoulder": 0.35,
+    "rightShoulder": 0.35,
+    "leftUpperArm": 0.3,
+    "rightUpperArm": 0.3,
+    "leftLowerArm": 0.25,
+    "rightLowerArm": 0.25,
+    "leftHand": 0.2,
+    "rightHand": 0.2,
+    "leftUpperLeg": 1,
+    "rightUpperLeg": 1,
+    "leftLowerLeg": 1,
+    "rightLowerLeg": 1,
+    "leftFoot": 1,
+    "rightFoot": 1,
+    "leftToes": 1,
+    "rightToes": 1,
+    "leftThumbMetacarpal": 0.12,
+    "leftThumbProximal": 0.12,
+    "leftThumbDistal": 0.12,
+    "leftIndexProximal": 0.12,
+    "leftIndexIntermediate": 0.12,
+    "leftIndexDistal": 0.12,
+    "leftMiddleProximal": 0.12,
+    "leftMiddleIntermediate": 0.12,
+    "leftMiddleDistal": 0.12,
+    "leftRingProximal": 0.12,
+    "leftRingIntermediate": 0.12,
+    "leftRingDistal": 0.12,
+    "leftLittleProximal": 0.12,
+    "leftLittleIntermediate": 0.12,
+    "leftLittleDistal": 0.12,
+    "rightThumbMetacarpal": 0.12,
+    "rightThumbProximal": 0.12,
+    "rightThumbDistal": 0.12,
+    "rightIndexProximal": 0.12,
+    "rightIndexIntermediate": 0.12,
+    "rightIndexDistal": 0.12,
+    "rightMiddleProximal": 0.12,
+    "rightMiddleIntermediate": 0.12,
+    "rightMiddleDistal": 0.12,
+    "rightRingProximal": 0.12,
+    "rightRingIntermediate": 0.12,
+    "rightRingDistal": 0.12,
+    "rightLittleProximal": 0.12,
+    "rightLittleIntermediate": 0.12,
+    "rightLittleDistal": 0.12
+  }
+}
