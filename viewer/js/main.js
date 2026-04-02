@@ -3719,6 +3719,59 @@
       }
     }
 
+    function buildCurrentModelSkeletonProfile() {
+      if (!modelSkinnedMesh) return null;
+      const canonicalMap = buildCanonicalBoneMap(modelSkinnedMesh.skeleton?.bones || []);
+      const jointOffsets = {};
+      for (const joint of VRM_HUMANOID_BONE_NAMES) {
+        const bone = canonicalMap.get(joint) || null;
+        if (!bone?.isBone) continue;
+        const bindPos = bone.userData.__bindPosition?.isVector3 ? bone.userData.__bindPosition : bone.position;
+        if (!bindPos?.isVector3) continue;
+        jointOffsets[joint] = [
+          Number(bindPos.x.toFixed(6)),
+          Number(bindPos.y.toFixed(6)),
+          Number(bindPos.z.toFixed(6)),
+        ];
+      }
+      return {
+        format: "vid2model.skeleton-profile.v1",
+        generatedAt: new Date().toISOString(),
+        modelLabel,
+        modelFingerprint: modelRigFingerprint,
+        joint_offsets: jointOffsets,
+      };
+    }
+
+    window.__vid2modelExportSkeletonProfile = (download = false, filename = "") => {
+      const payload = buildCurrentModelSkeletonProfile();
+      if (!payload) {
+        console.warn("[vid2model/diag] skeleton-profile: no model loaded");
+        return null;
+      }
+      window.__vid2modelSkeletonProfile = payload;
+      if (download) {
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+        const href = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = href;
+        a.download =
+          String(filename || "").trim() ||
+          `${(modelLabel || "model").replace(/\.[^.]+$/, "") || "model"}.skeleton-profile.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(href), 0);
+      }
+      console.log("[vid2model/diag] skeleton-profile", {
+        modelLabel: payload.modelLabel,
+        modelFingerprint: payload.modelFingerprint,
+        joints: Object.keys(payload.joint_offsets || {}).length,
+        downloaded: !!download,
+      });
+      return payload;
+    };
+
     function loadModelBuffer(buffer, label) {
       setStatus(`Loading model: ${label} ...`);
       gltfLoader.parse(

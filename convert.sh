@@ -12,6 +12,7 @@ ROI_CROP="${ROI_CROP:-off}"
 ROOT_YAW_OFFSET_DEG="${ROOT_YAW_OFFSET_DEG:-0}"
 LOWER_BODY_ROTATION_MODE="${LOWER_BODY_ROTATION_MODE:-off}"
 LOOP_MODE="${LOOP_MODE:-off}"
+SKELETON_PROFILE_JSON="${SKELETON_PROFILE_JSON:-}"
 
 python_minor() {
   "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
@@ -84,6 +85,7 @@ Environment knobs:
   ROOT_YAW_OFFSET_DEG=0|180|-90     Extra source root yaw offset in degrees.
   LOWER_BODY_ROTATION_MODE=off|invert|yaw180  Extra lower-body source rotation correction.
   LOOP_MODE=off|auto|force          Extract a cyclic loop window from the cleaned motion.
+  SKELETON_PROFILE_JSON=path        Override BVH rest offsets using a model skeleton profile JSON.
 USAGE
 }
 
@@ -208,6 +210,9 @@ if [[ -n "$LOWER_BODY_ROTATION_MODE" ]]; then
 fi
 if [[ -n "$LOOP_MODE" ]]; then
   CMD+=(--loop-mode "$LOOP_MODE")
+fi
+if [[ -n "$SKELETON_PROFILE_JSON" ]]; then
+  CMD+=(--skeleton-profile-json "$SKELETON_PROFILE_JSON")
 fi
 
 "${CMD[@]}"

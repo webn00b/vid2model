@@ -273,6 +273,27 @@ class PipelineGapFillingTests(unittest.TestCase):
         self.assertAlmostEqual(float(unwrapped[1][5]), 185.0, places=6)
         self.assertAlmostEqual(float(unwrapped[2][5]), 190.0, places=6)
 
+    def test_skeleton_profile_overrides_rest_offsets(self) -> None:
+        rest_offsets = {
+            "hips": np.array([0.0, 0.0, 0.0], dtype=np.float64),
+            "spine": np.array([0.0, 20.0, 0.0], dtype=np.float64),
+            "leftUpperLeg": np.array([-6.0, -16.0, 2.0], dtype=np.float64),
+        }
+        profile = {
+            "joint_offsets": {
+                "spine": [0.0, 2.0, 0.0],
+                "leftUpperLeg": [-0.6, -1.6, 0.2],
+            }
+        }
+
+        updated, stats = pipeline.apply_skeleton_profile_to_rest_offsets(rest_offsets, profile)
+        self.assertGreater(stats["applied"], 0.5)
+        self.assertEqual(int(stats["overridden"]), 2)
+        self.assertAlmostEqual(float(stats["scale_ratio"]), 10.0, places=6)
+        self.assertAlmostEqual(float(updated["spine"][1]), 20.0, places=6)
+        self.assertAlmostEqual(float(updated["leftUpperLeg"][0]), -6.0, places=6)
+        self.assertAlmostEqual(float(updated["leftUpperLeg"][2]), 2.0, places=6)
+
     def test_blend_motion_loop_edges_reduces_first_last_gap(self) -> None:
         def make_frame(phase: float, edge_bias: float = 0.0) -> dict[str, np.ndarray]:
             swing = np.sin(phase)

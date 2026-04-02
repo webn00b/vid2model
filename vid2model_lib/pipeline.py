@@ -1346,6 +1346,61 @@ def build_rest_offsets(samples: List[Dict[str, np.ndarray]]) -> Dict[str, np.nda
     return rest
 
 
+def apply_skeleton_profile_to_rest_offsets(
+    rest_offsets: Dict[str, np.ndarray],
+    skeleton_profile: Optional[Dict[str, Any]],
+) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    if not skeleton_profile:
+        return rest_offsets, {"applied": 0.0, "overridden": 0.0}
+
+    offsets_raw = skeleton_profile.get("joint_offsets") if isinstance(skeleton_profile, dict) else None
+    if not isinstance(offsets_raw, dict):
+        return rest_offsets, {"applied": 0.0, "overridden": 0.0}
+
+    out = {name: value.copy() for name, value in rest_offsets.items()}
+    raw_vectors: Dict[str, np.ndarray] = {}
+    scale_ratios: List[float] = []
+    for joint in JOINTS:
+        if joint.parent is None:
+            continue
+        raw = offsets_raw.get(joint.name)
+        if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+            continue
+        try:
+            vec = np.array([float(raw[0]), float(raw[1]), float(raw[2])], dtype=np.float64)
+        except Exception:
+            continue
+        if not np.all(np.isfinite(vec)) or np.linalg.norm(vec) < 1e-6:
+            continue
+        raw_vectors[joint.name] = vec
+        rest_vec = rest_offsets.get(joint.name)
+        if rest_vec is None:
+            continue
+        rest_len = float(np.linalg.norm(rest_vec))
+        raw_len = float(np.linalg.norm(vec))
+        if rest_len > 1e-6 and raw_len > 1e-6:
+            scale_ratios.append(rest_len / raw_len)
+
+    scale_ratio = 1.0
+    if scale_ratios:
+        scale_ratio = float(np.median(np.array(scale_ratios, dtype=np.float64)))
+        if not np.isfinite(scale_ratio) or scale_ratio < 1e-6:
+            scale_ratio = 1.0
+
+    overridden = 0
+    for joint_name, vec in raw_vectors.items():
+        out[joint_name] = vec * scale_ratio
+        overridden += 1
+
+    return out, {
+        "applied": 1.0 if overridden > 0 else 0.0,
+        "overridden": float(overridden),
+        "scale_ratio": float(scale_ratio),
+        "model_label": str(skeleton_profile.get("modelLabel", "")) if isinstance(skeleton_profile, dict) else "",
+        "model_fingerprint": str(skeleton_profile.get("modelFingerprint", "")) if isinstance(skeleton_profile, dict) else "",
+    }
+
+
 def _median_pose_sample(samples: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
     if not samples:
         raise RuntimeError("No valid pose frames detected in video.")
@@ -2392,6 +2447,7 @@ def convert_video_to_bvh(
     max_frame_side: int = 0,
     roi_crop: str = "off",
     pose_corrections: Optional[PoseCorrectionProfile] = None,
+    skeleton_profile: Optional[Dict[str, Any]] = None,
     root_yaw_offset_deg: float = 0.0,
     lower_body_rotation_mode: str = "off",
     loop_mode: str = "off",
@@ -2515,6 +2571,15 @@ def convert_video_to_bvh(
             )
 
     rest_offsets = build_rest_offsets(canonical_anchor_samples)
+    rest_offsets, skeleton_profile_stats = apply_skeleton_profile_to_rest_offsets(rest_offsets, skeleton_profile)
+    if skeleton_profile_stats["applied"] > 0.5:
+        print(
+            (
+                f"[vid2model] skeleton_profile overridden={int(skeleton_profile_stats['overridden'])} "
+                f"model={str(skeleton_profile_stats.get('model_label', '')) or 'unknown'}"
+            ),
+            file=sys.stderr,
+        )
     root_point_name = MAP_TO_POINTS[JOINTS[0].name][0]
     ref_root = frames_pts[0][root_point_name].copy()
 
@@ -2564,6 +2629,10 @@ def convert_video_to_bvh(
             "normalized_applied": float(yaw_norm_stats["applied"]),
             "normalized_offset_deg": float(yaw_norm_stats["offset_deg"]),
             "manual_offset_deg": float(root_yaw_offset_deg),
+        },
+        "skeleton_profile": {
+            key: float(value) if isinstance(value, (int, float)) else value
+            for key, value in skeleton_profile_stats.items()
         },
         "rotation_unwrap": {key: float(value) for key, value in unwrap_stats.items()},
         "loop": {
