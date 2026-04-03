@@ -337,6 +337,16 @@
       return `rig:${hashString(raw)}`;
     }
 
+    let modelAnalysisTools = null;
+
+    function buildRigProfileSeedForCurrentModel(stage = "body") {
+      return modelAnalysisTools?.buildRigProfileSeedForCurrentModel(stage) || null;
+    }
+
+    function buildSeedCorrectionSummary(profile) {
+      return modelAnalysisTools?.buildSeedCorrectionSummary(profile) || [];
+    }
+
     const rigProfileService = createViewerRigProfileService({
       windowRef: window,
       storageKey: RIG_PROFILE_STORAGE_KEY,
@@ -874,7 +884,7 @@
       exportCurrentModelSkeletonProfile,
     } = skeletonProfileTools;
 
-    const modelAnalysisTools = createViewerModelAnalysisTools({
+    modelAnalysisTools = createViewerModelAnalysisTools({
       windowRef: window,
       buildCanonicalBoneMap,
       canonicalBoneKey,
@@ -888,8 +898,6 @@
 
     const {
       exportCurrentModelAnalysis,
-      buildRigProfileSeedForCurrentModel,
-      buildSeedCorrectionSummary,
     } = modelAnalysisTools;
 
     const skeletonDebugTools = createViewerSkeletonDebugTools({
