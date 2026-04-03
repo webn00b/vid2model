@@ -51,6 +51,22 @@ python3 tools/train_auto_pose_model.py --input output/auto_pose_dataset.jsonl --
 - `export_bvh_to_fbx_blender.py` - скрипт экспорта внутри Blender.
 - `viewer/index.html` - локальный BVH viewer (Three.js).
 
+### Архитектура `vid2model_lib`
+
+- `pipeline.py` - публичный фасад и orchestration-слой.
+- `pipeline_video_scan.py` - чтение видео, preprocessing, detector/ROI-логика.
+- `pipeline_gap_fill.py` - заполнение пропусков между найденными pose frames.
+- `pipeline_cleanup.py` - smoothing, foot-contact cleanup, constraints, leg IK.
+- `pipeline_auto_pose.py` - `PoseCorrectionProfile`, auto-pose features и classifier integration.
+- `pipeline_retarget.py` - reference basis, canonicalization, pose corrections.
+- `pipeline_channels.py` - расчёт motion channels и joint rotation solving.
+- `pipeline_motion_transforms.py` - post-process для root yaw и rotation channel cleanup.
+- `pipeline_loop.py` - loopability analysis, extraction и edge blending.
+- `pipeline_rest_offsets.py` - rest offsets и skeleton profile overrides.
+- `pipeline_mirror.py` - mirror / side-swap heuristics и temporal fix helpers.
+
+Идея такая: внешний код продолжает работать через `vid2model_lib.pipeline`, а внутренняя логика живёт в небольших тематических модулях.
+
 ## Требования
 
 - Python 3.10+ (рекомендуется 3.11+)

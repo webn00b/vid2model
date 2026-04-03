@@ -2,6 +2,10 @@ import unittest
 
 import numpy as np
 
+from vid2model_lib.pipeline_auto_pose import DEFAULT_POSE_CORRECTIONS
+from vid2model_lib.pipeline_cleanup import _copy_pose_frame
+from vid2model_lib.pipeline_retarget import apply_pose_corrections
+from vid2model_lib.pipeline_video_scan import _should_fallback_to_legacy_pose
 from vid2model_lib.pipeline import build_pose_correction_profile, fill_pose_gaps
 from vid2model_lib import pipeline
 from vid2model_lib.pose_points import extract_pose_points, LM
@@ -16,8 +20,8 @@ class PipelineGapFillingTests(unittest.TestCase):
         exc = RuntimeError(
             'Service "kGpuService" ... Could not create an NSOpenGLPixelFormat'
         )
-        self.assertTrue(pipeline._should_fallback_to_legacy_pose(exc))
-        self.assertFalse(pipeline._should_fallback_to_legacy_pose(RuntimeError("plain failure")))
+        self.assertTrue(_should_fallback_to_legacy_pose(exc))
+        self.assertFalse(_should_fallback_to_legacy_pose(RuntimeError("plain failure")))
 
     def test_extract_pose_points_builds_compact_neck_and_head_from_face_cluster(self) -> None:
         class Landmark:
@@ -149,7 +153,7 @@ class PipelineGapFillingTests(unittest.TestCase):
         self.assertAlmostEqual(float(mirrored["left_shoulder"][0]), 10.0, places=6)
         self.assertAlmostEqual(float(mirrored["right_shoulder"][0]), -10.0, places=6)
 
-        corrected = pipeline._apply_pose_corrections(mirrored, pipeline.DEFAULT_POSE_CORRECTIONS)
+        corrected = apply_pose_corrections(mirrored, DEFAULT_POSE_CORRECTIONS)
         ground_values = [corrected[k][1] for k in ("left_ankle", "right_ankle", "left_heel", "right_heel")]
         self.assertAlmostEqual(float(min(ground_values)), 0.0, places=6)
 
@@ -226,11 +230,11 @@ class PipelineGapFillingTests(unittest.TestCase):
             "neck": np.array([0.0, 25.0, 0.0], dtype=np.float64),
             "head": np.array([0.0, 30.0, 0.0], dtype=np.float64),
         }
-        anchor_samples = [pipeline._copy_pose_frame(base) for _ in range(3)]
+        anchor_samples = [_copy_pose_frame(base) for _ in range(3)]
 
         distorted = []
         for ankle_y in (-24.0, -38.0, -27.0):
-            frame = pipeline._copy_pose_frame(base)
+            frame = _copy_pose_frame(base)
             frame["left_ankle"] = np.array([-5.0, ankle_y, 0.0], dtype=np.float64)
             distorted.append(frame)
 
@@ -269,7 +273,7 @@ class PipelineGapFillingTests(unittest.TestCase):
             }
             frames.append(frame)
 
-        anchors = [pipeline._copy_pose_frame(frames[0]) for _ in range(3)]
+        anchors = [_copy_pose_frame(frames[0]) for _ in range(3)]
         before_ankle_x = [float(frame["left_ankle"][0]) for frame in frames]
         before_ankle_z = [float(frame["left_ankle"][2]) for frame in frames]
         cleaned, stats = pipeline.cleanup_pose_frames(frames, anchors)
@@ -520,7 +524,7 @@ class PipelineGapFillingTests(unittest.TestCase):
                 }
             )
 
-        anchors = [pipeline._copy_pose_frame(frames[0]) for _ in range(3)]
+        anchors = [_copy_pose_frame(frames[0]) for _ in range(3)]
         before_x = [float(frame["mid_hip"][0]) for frame in frames]
         before_z = [float(frame["mid_hip"][2]) for frame in frames]
         cleaned, stats = pipeline.cleanup_pose_frames(frames, anchors)
@@ -562,7 +566,7 @@ class PipelineGapFillingTests(unittest.TestCase):
 
         anchors = [
             {
-                **pipeline._copy_pose_frame(frames[0]),
+                **_copy_pose_frame(frames[0]),
                 "left_hip": np.array(base_hip, dtype=np.float64),
                 "left_knee": np.array(base_knee, dtype=np.float64),
                 "left_ankle": np.array(base_ankle, dtype=np.float64),
@@ -606,7 +610,7 @@ class PipelineGapFillingTests(unittest.TestCase):
             }
             frames.append(frame)
 
-        anchors = [pipeline._copy_pose_frame(frames[0]) for _ in range(3)]
+        anchors = [_copy_pose_frame(frames[0]) for _ in range(3)]
         cleaned, stats = pipeline.cleanup_pose_frames(frames, anchors, use_contact_cleanup=False)
 
         self.assertEqual(stats["contact_windows"], 0.0)
