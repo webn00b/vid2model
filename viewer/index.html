@@ -146,9 +146,12 @@
         <input id="model-input" type="file" accept=".glb,.vrm" title="Load character model file (.glb or .vrm)" />
         <span id="model-file-name" class="file-name">not selected</span>
       </div>
+      <button id="auto-setup" class="primary" title="Analyze the loaded model, pick the best available profile, and apply the animation">Auto Setup</button>
+      <button id="save-model-setup" title="Save the current model setup for future retargets on this machine">Save Model Setup</button>
       <button id="retarget">Apply To Model</button>
       <button id="validate-profile" title="Mark the current rig profile as validated for this model">Validate Profile</button>
       <button id="export-profile" title="Download validated rig profile JSON for the current model">Export Profile</button>
+      <button id="export-model-analysis" title="Download skeleton and proportion analysis for the current model">Export Model Analysis</button>
       <button id="import-profile" title="Import rig profile JSON and save it as validated">Import Profile</button>
       <input id="profile-input" type="file" accept=".json,application/json" hidden />
       <button id="zoom-in">Zoom +</button>

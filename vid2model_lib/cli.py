@@ -359,6 +359,7 @@ def main() -> int:
         root_yaw_offset_deg=options.root_yaw_offset_deg,
         lower_body_rotation_mode=options.lower_body_rotation_mode,
         loop_mode=options.loop_mode,
+        include_source_stage_diagnostics=options.output_diag_json is not None,
     )
     quality = diagnostics.get("quality")
     if isinstance(quality, dict):

@@ -5,9 +5,12 @@ export function setupViewerUi({ elements, ops }) {
     bvhFileNameEl,
     modelFileNameEl,
     btnLoadDefault,
+    btnAutoSetup,
+    btnSaveModelSetup,
     btnRetarget,
     btnValidateProfile,
     btnExportProfile,
+    btnExportModelAnalysis,
     btnImportProfile,
     btnRetargetFab,
     btnZoomIn,
@@ -22,23 +25,22 @@ export function setupViewerUi({ elements, ops }) {
 
   const {
     loadDefault,
-    applyBvhToModel,
+    autoSetupModel,
+    saveModelSetup,
+    retarget,
     validateCurrentRigProfile,
     exportCurrentRigProfile,
+    exportCurrentModelAnalysis,
     importRigProfileFile,
-    zoomBy,
-    loadBvhText,
+    zoomIn,
+    zoomOut,
+    loadBvhFile,
     loadModelFile,
-    setStatus,
-    getActiveDuration,
-    updateTimelineUi,
-    setIsScrubbing,
-    setIsPlaying,
-    getPlaybackRefs,
-    applyLiveRetargetPose,
-    applyBoneLengthCalibration,
-    applyFingerLengthCalibration,
-    alignModelHipsToSource,
+    play,
+    pause,
+    stop,
+    scrubTo,
+    finishScrub,
     resetCamera,
   } = ops;
 
@@ -46,9 +48,7 @@ export function setupViewerUi({ elements, ops }) {
     const file = e.target.files?.[0];
     if (!file) return;
     if (bvhFileNameEl) bvhFileNameEl.textContent = file.name;
-    setStatus(`Loading ${file.name} ...`);
-    const text = await file.text();
-    loadBvhText(text, file.name);
+    await loadBvhFile(file);
   });
 
   modelInput?.addEventListener("change", (e) => {
@@ -59,99 +59,31 @@ export function setupViewerUi({ elements, ops }) {
   });
 
   btnLoadDefault?.addEventListener("click", loadDefault);
-  btnRetarget?.addEventListener("click", applyBvhToModel);
+  btnAutoSetup?.addEventListener("click", autoSetupModel);
+  btnSaveModelSetup?.addEventListener("click", saveModelSetup);
+  btnRetarget?.addEventListener("click", retarget);
   btnValidateProfile?.addEventListener("click", validateCurrentRigProfile);
   btnExportProfile?.addEventListener("click", () => exportCurrentRigProfile(true));
+  btnExportModelAnalysis?.addEventListener("click", () => exportCurrentModelAnalysis(true));
   btnImportProfile?.addEventListener("click", () => importRigProfileFile());
   if (btnRetargetFab) {
-    btnRetargetFab.addEventListener("click", applyBvhToModel);
+    btnRetargetFab.addEventListener("click", retarget);
   }
-  btnZoomIn?.addEventListener("click", () => zoomBy(0.85));
-  btnZoomOut?.addEventListener("click", () => zoomBy(1.2));
-
-  btnPlay?.addEventListener("click", () => {
-    const playback = getPlaybackRefs();
-    if (!playback.mixer && !playback.modelMixers.length) return;
-    setIsPlaying(true);
-    if (playback.currentAction) playback.currentAction.paused = false;
-    for (const action of playback.modelActions) {
-      action.paused = false;
-    }
-    setStatus("Playback: play");
-  });
-
-  btnPause?.addEventListener("click", () => {
-    const playback = getPlaybackRefs();
-    if (!playback.mixer && !playback.modelMixers.length) return;
-    setIsPlaying(false);
-    if (playback.currentAction) playback.currentAction.paused = true;
-    for (const action of playback.modelActions) {
-      action.paused = true;
-    }
-    setStatus("Playback: pause");
-  });
-
-  btnStop?.addEventListener("click", () => {
-    const playback = getPlaybackRefs();
-    if (!playback.mixer && !playback.modelMixers.length) return;
-    setIsPlaying(false);
-    if (playback.currentAction) playback.currentAction.paused = true;
-    for (const action of playback.modelActions) {
-      action.paused = true;
-    }
-    if (playback.mixer) playback.mixer.setTime(0);
-    for (const mix of playback.modelMixers) {
-      mix.setTime(0);
-    }
-    if (playback.liveRetarget) {
-      applyLiveRetargetPose(playback.liveRetarget);
-    }
-    if (playback.bodyLengthCalibration && !playback.liveRetarget) {
-      applyBoneLengthCalibration(playback.bodyLengthCalibration);
-    }
-    if (playback.armLengthCalibration && !playback.liveRetarget) {
-      applyBoneLengthCalibration(playback.armLengthCalibration);
-    }
-    if (playback.fingerLengthCalibration && !playback.liveRetarget) {
-      applyFingerLengthCalibration(playback.fingerLengthCalibration);
-    }
-    alignModelHipsToSource(false);
-    updateTimelineUi(0);
-    setStatus("Playback: stop");
-  });
+  btnZoomIn?.addEventListener("click", zoomIn);
+  btnZoomOut?.addEventListener("click", zoomOut);
+  btnPlay?.addEventListener("click", play);
+  btnPause?.addEventListener("click", pause);
+  btnStop?.addEventListener("click", stop);
 
   timeline?.addEventListener("input", () => {
-    const duration = getActiveDuration();
-    const playback = getPlaybackRefs();
-    if (!duration || (!playback.mixer && !playback.modelMixers.length)) return;
-
-    setIsScrubbing(true);
-    const t = Math.max(0, Math.min(duration, Number(timeline.value)));
-    if (playback.mixer) playback.mixer.setTime(t);
-    for (const mix of playback.modelMixers) {
-      mix.setTime(t);
+    const result = scrubTo(Number(timeline.value));
+    if (timeEl && result.ok) {
+      timeEl.textContent = `${result.time.toFixed(2)} / ${result.duration.toFixed(2)}`;
     }
-    if (playback.liveRetarget) {
-      applyLiveRetargetPose(playback.liveRetarget);
-    }
-    if (playback.bodyLengthCalibration && !playback.liveRetarget) {
-      applyBoneLengthCalibration(playback.bodyLengthCalibration);
-    }
-    if (playback.armLengthCalibration && !playback.liveRetarget) {
-      applyBoneLengthCalibration(playback.armLengthCalibration);
-    }
-    if (playback.fingerLengthCalibration && !playback.liveRetarget) {
-      applyFingerLengthCalibration(playback.fingerLengthCalibration);
-    }
-    alignModelHipsToSource(false);
-    if (timeEl) {
-      timeEl.textContent = `${t.toFixed(2)} / ${duration.toFixed(2)}`;
-    }
-    setStatus(`Scrub: ${t.toFixed(2)}s`);
   });
 
   timeline?.addEventListener("change", () => {
-    setIsScrubbing(false);
+    finishScrub();
   });
 
   btnResetCamera?.addEventListener("click", () => {

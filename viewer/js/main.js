@@ -28,6 +28,7 @@
       computeHipsYawError,
       dumpRetargetAlignmentDiagnostics,
       getLiveDeltaOverride,
+      summarizeSourceRootYawClip,
     } from "./modules/retarget-analysis.js";
     import {
       buildBindingsForAttempt,
@@ -77,12 +78,15 @@
       logModelBones,
     } from "./modules/viewer-model-loader.js";
     import { createViewerParsedModelApplier } from "./modules/viewer-parsed-model.js";
+    import { createViewerController } from "./modules/viewer-controller.js";
+    import { createViewerRigProfileService } from "./modules/viewer-rig-profile-service.js";
     import {
       collectRetargetAttempts,
       selectRetargetAttempt,
     } from "./modules/viewer-retarget-attempts.js";
     import { createViewerSourceOverlay } from "./modules/viewer-source-overlay.js";
     import { createViewerSkeletonProfileTools } from "./modules/viewer-skeleton-profile.js";
+    import { createViewerModelAnalysisTools } from "./modules/viewer-model-analysis.js";
     import { createViewerSkeletonDebugTools } from "./modules/viewer-skeleton-debug.js";
     import {
       autoNameTargetBones,
@@ -96,9 +100,12 @@
     const modelInput = document.getElementById("model-input");
     const bvhFileNameEl = document.getElementById("bvh-file-name");
     const modelFileNameEl = document.getElementById("model-file-name");
+    const btnAutoSetup = document.getElementById("auto-setup");
+    const btnSaveModelSetup = document.getElementById("save-model-setup");
     const btnRetarget = document.getElementById("retarget");
     const btnValidateProfile = document.getElementById("validate-profile");
     const btnExportProfile = document.getElementById("export-profile");
+    const btnExportModelAnalysis = document.getElementById("export-model-analysis");
     const btnImportProfile = document.getElementById("import-profile");
     const profileInput = document.getElementById("profile-input");
     const btnRetargetFab = document.getElementById("retarget-fab");
@@ -163,21 +170,6 @@
     let bodyLengthCalibration = null;
     let armLengthCalibration = null;
     let fingerLengthCalibration = null;
-    let latestRigProfileCandidate = null;
-    let latestRigProfileState = {
-      modelLabel: "",
-      modelFingerprint: "",
-      stage: "",
-      source: "none",
-      validationStatus: "none",
-      hasProfile: false,
-      saved: false,
-      basedOnBuiltin: false,
-      profileId: "",
-    };
-    let repoRigProfileManifest = null;
-    let repoRigProfileManifestPromise = null;
-    let repoRigProfiles = [];
     let isPlaying = false;
     let isScrubbing = false;
     const loader = new BVHLoader();
@@ -345,481 +337,96 @@
       return `rig:${hashString(raw)}`;
     }
 
-    function readStoredRigProfiles() {
-      try {
-        const raw = window.localStorage?.getItem(RIG_PROFILE_STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : [];
-        return Array.isArray(parsed)
-          ? parsed
-              .map((entry) => normalizeRigProfileEntry(entry))
-              .filter(Boolean)
-          : [];
-      } catch (err) {
-        return [];
-      }
-    }
+    const rigProfileService = createViewerRigProfileService({
+      windowRef: window,
+      storageKey: RIG_PROFILE_STORAGE_KEY,
+      maxEntries: MAX_RIG_PROFILE_ENTRIES,
+      statusValues: RIG_PROFILE_STATUS_VALUES,
+      repoManifestUrl: REPO_RIG_PROFILE_MANIFEST_URL,
+      getBuiltinRigProfile,
+      getRetargetStage,
+      getCurrentModelRigFingerprint: () => modelRigFingerprint,
+      buildRigProfileSeedForCurrentModel,
+      buildSeedCorrectionSummary,
+    });
 
-    function writeStoredRigProfiles(entries) {
-      try {
-        window.localStorage?.setItem(RIG_PROFILE_STORAGE_KEY, JSON.stringify(entries));
-        return true;
-      } catch (err) {
-        return false;
-      }
-    }
-
-    function normalizeRigProfileEntry(entry) {
-      if (!entry || typeof entry !== "object") return null;
-      const modelFingerprint = String(entry.modelFingerprint || "").trim();
-      const stage = String(entry.stage || "").trim().toLowerCase();
-      if (!modelFingerprint || !stage) return null;
-      const validationStatus = String(entry.validationStatus || "draft").trim().toLowerCase();
-      return {
-        ...entry,
-        modelLabel: String(entry.modelLabel || ""),
-        modelFingerprint,
-        stage,
-        source: String(entry.source || "localStorage"),
-        validationStatus: RIG_PROFILE_STATUS_VALUES.has(validationStatus) ? validationStatus : "draft",
-        autoSaved: entry.autoSaved !== false,
-        updatedAt: entry.updatedAt || null,
-        validatedAt: entry.validatedAt || null,
-      };
-    }
-
-    function getRigProfilePriority(entry) {
-      if (!entry) return -1;
-      if (entry.validationStatus === "validated") return 2;
-      if (entry.validationStatus === "draft") return 1;
-      return 0;
-    }
-
-    function getRigProfileSourcePriority(entry) {
-      const source = String(entry?.source || "").trim().toLowerCase();
-      const isRepoSource = source === "repo-manifest" || source === "repo";
-      if (entry?.validationStatus === "validated") {
-        return isRepoSource ? 1 : 2;
-      }
-      return isRepoSource ? -1 : 0;
-    }
-
-    function compareRigProfiles(a, b) {
-      const sourcePriorityDiff = getRigProfileSourcePriority(b) - getRigProfileSourcePriority(a);
-      if (sourcePriorityDiff !== 0) return sourcePriorityDiff;
-      const priorityDiff = getRigProfilePriority(b) - getRigProfilePriority(a);
-      if (priorityDiff !== 0) return priorityDiff;
-      const aErr = Number.isFinite(a?.postPoseError) ? a.postPoseError : Number.POSITIVE_INFINITY;
-      const bErr = Number.isFinite(b?.postPoseError) ? b.postPoseError : Number.POSITIVE_INFINITY;
-      if (aErr !== bErr) return aErr - bErr;
-      const aTime = Date.parse(a?.validatedAt || a?.updatedAt || "") || 0;
-      const bTime = Date.parse(b?.validatedAt || b?.updatedAt || "") || 0;
-      return bTime - aTime;
-    }
-
-    function findStoredRigProfiles(modelFingerprint, stage) {
-      const normalizedFingerprint = String(modelFingerprint || "").trim();
-      const normalizedStage = String(stage || "").trim().toLowerCase();
-      if (!normalizedFingerprint || !normalizedStage) return [];
-      return readStoredRigProfiles()
-        .filter((entry) => entry.modelFingerprint === normalizedFingerprint && entry.stage === normalizedStage)
-        .sort(compareRigProfiles);
-    }
-
-    function findRepoRigProfiles(modelFingerprint, stage) {
-      const normalizedFingerprint = String(modelFingerprint || "").trim();
-      const normalizedStage = String(stage || "").trim().toLowerCase();
-      if (!normalizedFingerprint || !normalizedStage) return [];
-      return repoRigProfiles
-        .filter((entry) => entry.modelFingerprint === normalizedFingerprint && entry.stage === normalizedStage)
-        .sort(compareRigProfiles);
-    }
-
-    function normalizeRepoRigProfileManifest(payload) {
-      if (!payload || typeof payload !== "object") return [];
-      if (payload.format && payload.format !== "vid2model.rig-profile-manifest.v1") return [];
-      const rows = Array.isArray(payload.profiles) ? payload.profiles : [];
-      return rows
-        .map((entry) => {
-          const modelFingerprint = String(entry?.modelFingerprint || "").trim();
-          const stage = String(entry?.stage || "").trim().toLowerCase();
-          const path = String(entry?.path || "").trim();
-          if (!modelFingerprint || !stage || !path) return null;
-          return {
-            modelFingerprint,
-            modelLabel: String(entry?.modelLabel || ""),
-            stage,
-            path,
-          };
-        })
-        .filter(Boolean);
-    }
-
-    async function ensureRepoRigProfileManifest() {
-      if (repoRigProfileManifest) return repoRigProfileManifest;
-      if (repoRigProfileManifestPromise) return repoRigProfileManifestPromise;
-      repoRigProfileManifestPromise = fetch(REPO_RIG_PROFILE_MANIFEST_URL)
-        .then(async (res) => {
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-          }
-          const payload = await res.json();
-          repoRigProfileManifest = normalizeRepoRigProfileManifest(payload);
-          return repoRigProfileManifest;
-        })
-        .catch((err) => {
-          console.warn("[vid2model/diag] rig-profile-manifest unavailable:", err?.message || err);
-          repoRigProfileManifest = [];
-          return repoRigProfileManifest;
-        })
-        .finally(() => {
-          repoRigProfileManifestPromise = null;
-        });
-      return repoRigProfileManifestPromise;
-    }
-
-    async function loadRepoRigProfileEntry(entry) {
-      const url = new URL(entry.path, REPO_RIG_PROFILE_MANIFEST_URL).href;
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const payload = await res.json();
-      const profile = normalizeRigProfileEntry(payload?.profile || payload);
-      if (!profile) {
-        throw new Error("Invalid rig profile payload");
-      }
-      const loaded = {
-        ...profile,
-        modelFingerprint: entry.modelFingerprint || profile.modelFingerprint,
-        modelLabel: entry.modelLabel || payload?.modelLabel || profile.modelLabel || "",
-        stage: entry.stage || profile.stage,
-        source: "repo-manifest",
-        validationStatus: "validated",
-      };
-      repoRigProfiles = [
-        loaded,
-        ...repoRigProfiles.filter(
-          (item) => !(item.modelFingerprint === loaded.modelFingerprint && item.stage === loaded.stage)
-        ),
-      ];
-      return loaded;
-    }
-
-    async function ensureRepoRigProfilesForModel({
-      modelFingerprint = modelRigFingerprint,
-      modelLabel: nextModelLabel = "",
-    } = {}) {
-      const manifest = await ensureRepoRigProfileManifest();
-      const entries = manifest.filter((entry) => entry.modelFingerprint === modelFingerprint);
-      if (!entries.length) return [];
-      const localValidatedStages = new Set(
-        readStoredRigProfiles()
-          .filter((entry) => entry.modelFingerprint === modelFingerprint && entry.validationStatus === "validated")
-          .map((entry) => entry.stage)
-      );
-      const loaded = [];
-      for (const entry of entries) {
-        if (localValidatedStages.has(entry.stage)) continue;
-        try {
-          const profile = await loadRepoRigProfileEntry(entry);
-          loaded.push(profile);
-        } catch (err) {
-          console.warn("[vid2model/diag] rig-profile-manifest entry failed:", {
-            modelFingerprint,
-            stage: entry.stage,
-            path: entry.path,
-            error: String(err?.message || err),
-          });
-        }
-      }
-      if (loaded.length) {
-        const activeProfile = loadRigProfile(modelFingerprint, getRetargetStage(), nextModelLabel);
-        publishRigProfileState(buildRigProfileState(activeProfile, {
-          modelFingerprint,
-          modelLabel: nextModelLabel,
-          stage: getRetargetStage(),
-          saved: false,
-        }));
-      }
-      return loaded;
-    }
-
-    function buildRigProfileState(profile, {
-      modelFingerprint = "",
-      modelLabel = "",
-      stage = "",
-      saved = false,
-    } = {}) {
-      return {
-        modelLabel: String(modelLabel || profile?.modelLabel || ""),
-        modelFingerprint: String(modelFingerprint || profile?.modelFingerprint || ""),
-        stage: String(stage || profile?.stage || ""),
-        source: String(profile?.source || "none"),
-        validationStatus: String(profile?.validationStatus || "none"),
-        hasProfile: !!profile,
-        saved: !!saved,
-        basedOnBuiltin: !!profile?.basedOnBuiltin,
-        profileId: String(profile?.id || ""),
-        updatedAt: profile?.updatedAt || null,
-        validatedAt: profile?.validatedAt || null,
-      };
-    }
-
-    function publishRigProfileState(state) {
-      latestRigProfileState = {
-        ...latestRigProfileState,
-        ...(state || {}),
-      };
-      window.__vid2modelRigProfileState = { ...latestRigProfileState };
-      return window.__vid2modelRigProfileState;
-    }
-
-    function loadRigProfile(modelFingerprint, stage, modelLabel = "") {
-      if (!stage) return null;
-      const builtin = getBuiltinRigProfile({ modelFingerprint, modelLabel, stage });
-      if (builtin?.lockBuiltin) {
-        return {
-          ...builtin,
-          validationStatus: builtin.validationStatus || "validated",
-          source: builtin.source || "repo",
-        };
-      }
-      const storedCandidates = modelFingerprint
-        ? [
-            ...findStoredRigProfiles(modelFingerprint, stage),
-            ...findRepoRigProfiles(modelFingerprint, stage),
-          ].sort(compareRigProfiles)
-        : [];
-      const stored = storedCandidates[0] || null;
-      if (stored && builtin) {
-        return {
-          ...builtin,
-          ...stored,
-          namesTargetToSource: {
-            ...(builtin.namesTargetToSource || {}),
-            ...(stored.namesTargetToSource || {}),
-          },
-          liveRetarget: stored.liveRetarget ?? builtin.liveRetarget ?? null,
-          source: stored.source || "localStorage",
-          basedOnBuiltin: builtin.id || true,
-        };
-      }
-      if (stored) {
-        return { ...stored, source: stored.source || "localStorage" };
-      }
-      return builtin;
-    }
-
-    function saveRigProfile(entry, options = {}) {
-      if (!entry?.modelFingerprint || !entry?.stage) return false;
-      const validationStatus = String(options.validationStatus || entry.validationStatus || "draft").trim().toLowerCase();
-      const normalizedStatus = RIG_PROFILE_STATUS_VALUES.has(validationStatus) ? validationStatus : "draft";
-      const overwriteValidated = options.overwriteValidated === true;
-      const storedProfiles = findStoredRigProfiles(entry.modelFingerprint, entry.stage);
-      const existingValidated = storedProfiles.find((item) => item.validationStatus === "validated") || null;
-      if (existingValidated && normalizedStatus !== "validated" && !overwriteValidated) {
-        return false;
-      }
-      const existingSameStatus =
-        storedProfiles.find((item) => item.validationStatus === normalizedStatus) || null;
-      const existingError = existingSameStatus?.postPoseError;
-      const nextError = entry?.postPoseError;
-      if (
-        Number.isFinite(existingError) &&
-        Number.isFinite(nextError) &&
-        existingError <= nextError + 1e-6
-      ) {
-        return false;
-      }
-      const rows = readStoredRigProfiles().filter(
-        (item) => !(
-          item?.modelFingerprint === entry.modelFingerprint &&
-          item?.stage === entry.stage &&
-          (
-            item?.validationStatus === normalizedStatus ||
-            (normalizedStatus === "validated" && item?.validationStatus === "draft")
-          )
-        )
-      );
-      const timestamp = new Date().toISOString();
-      rows.unshift({
-        ...entry,
-        validationStatus: normalizedStatus,
-        autoSaved: normalizedStatus !== "validated",
-        updatedAt: timestamp,
-        validatedAt: normalizedStatus === "validated" ? timestamp : entry?.validatedAt || null,
-      });
-      return writeStoredRigProfiles(rows.slice(0, MAX_RIG_PROFILE_ENTRIES));
-    }
+    const {
+      readStoredRigProfiles,
+      findStoredRigProfiles,
+      findRepoRigProfiles,
+      ensureRepoRigProfilesForModel,
+      buildRigProfileState,
+      publishRigProfileState,
+      getLatestRigProfileState,
+      setLatestRigProfileCandidate,
+      loadRigProfile,
+      saveRigProfile,
+      validateCurrentRigProfile: validateRigProfileWithService,
+      buildRegisterRigProfileCommand,
+      exportCurrentRigProfile: exportRigProfileWithService,
+      importRigProfilePayload: importRigProfilePayloadWithService,
+      listRepoRigProfiles,
+      listRigProfiles,
+    } = rigProfileService;
 
     function validateCurrentRigProfile() {
-      const candidate = latestRigProfileCandidate;
-      if (!candidate?.modelFingerprint || !candidate?.stage) {
-        setStatus("No rig profile candidate yet. Retarget the model first.");
+      return validateRigProfileWithService({ setStatus });
+    }
+
+    function autoSetupModel() {
+      if (!sourceResult) {
+        setStatus("Load BVH first, then click Auto Setup.");
         return false;
       }
-      const saved = saveRigProfile(
-        {
-          ...candidate,
-          source: "localStorage",
-        },
-        {
-          validationStatus: "validated",
-          overwriteValidated: true,
-        }
-      );
-      const validated = loadRigProfile(candidate.modelFingerprint, candidate.stage, candidate.modelLabel);
-      publishRigProfileState(buildRigProfileState(validated, {
-        modelFingerprint: candidate.modelFingerprint,
-        modelLabel: candidate.modelLabel,
-        stage: candidate.stage,
-        saved,
-      }));
-      if (!saved) {
-        setStatus(`Rig profile already validated for ${candidate.stage}.`);
+      if (!modelSkinnedMesh) {
+        setStatus("Load model (.glb/.vrm) first, then click Auto Setup.");
         return false;
       }
-      setStatus(`Rig profile validated for ${candidate.modelLabel || "model"} [${candidate.stage}].`);
-      console.log("[vid2model/diag] rig-profile-validated", validated);
+      applyBvhToModel();
       return true;
     }
 
-    function getBestPortableRigProfile({
-      modelFingerprint = modelRigFingerprint,
-      stage = getRetargetStage(),
-      allowDraft = false,
-    } = {}) {
-      const profiles = findStoredRigProfiles(modelFingerprint, stage);
-      const validated = profiles.find((entry) => entry.validationStatus === "validated") || null;
-      if (validated) return validated;
-      return allowDraft ? (profiles[0] || null) : null;
-    }
-
-    function buildPortableRigProfilePayload(profile) {
-      if (!profile?.modelFingerprint || !profile?.stage) return null;
-      return {
-        format: "vid2model.rig-profile.v1",
-        exportedAt: new Date().toISOString(),
-        modelLabel: String(profile.modelLabel || ""),
-        modelFingerprint: String(profile.modelFingerprint || ""),
-        stage: String(profile.stage || ""),
-        profile: {
-          ...profile,
-          validationStatus: "validated",
-          source: "imported-json",
-        },
-      };
-    }
-
-    function buildSuggestedRigProfileDownloadName(payload, override = "") {
-      if (override && String(override).trim()) {
-        return String(override).trim();
+    function saveModelSetup() {
+      const activeStage = getRetargetStage();
+      const activeProfile = modelRigFingerprint
+        ? loadRigProfile(modelRigFingerprint, activeStage, modelLabel)
+        : null;
+      if (activeProfile?.validationStatus === "validated") {
+        const sourceLabel =
+          activeProfile.source === "repo"
+            ? "shared profile"
+            : activeProfile.source === "localStorage"
+              ? "saved local profile"
+              : "validated profile";
+        publishRigProfileState(buildRigProfileState(activeProfile, {
+          modelFingerprint: modelRigFingerprint,
+          modelLabel,
+          stage: activeStage,
+          saved: true,
+        }));
+        setStatus(`Model setup is already ready (${sourceLabel}) [${activeStage}].`);
+        return true;
       }
-      return `${(payload.modelLabel || "model").replace(/\.[^.]+$/, "") || "model"}.${payload.stage}.rig-profile.json`;
-    }
-
-    function buildRegisterRigProfileCommand({
-      inputPath = "",
-      filename = "",
-      allowDraft = false,
-      payload = null,
-    } = {}) {
-      const activePayload = payload || window.__vid2modelRigProfileExport || buildPortableRigProfilePayload(
-        getBestPortableRigProfile({ allowDraft })
-      );
-      if (!activePayload) return "";
-      const suggestedFilename = buildSuggestedRigProfileDownloadName(activePayload, filename);
-      const resolvedInput = String(inputPath || "").trim() || `/path/to/${suggestedFilename}`;
-      return `python3 tools/register_rig_profile.py --input ${resolvedInput}`;
+      if (validateCurrentRigProfile()) {
+        setStatus(`Model setup saved for ${modelLabel || "model"} [${activeStage}].`);
+        return true;
+      }
+      return false;
     }
 
     function exportCurrentRigProfile(download = false, filename = "", allowDraft = false) {
-      const profile = getBestPortableRigProfile({ allowDraft });
-      if (!profile) {
-        setStatus(allowDraft ? "No rig profile available for export." : "No validated rig profile yet. Validate a profile first.");
-        return null;
-      }
-      const payload = buildPortableRigProfilePayload(profile);
-      if (!payload) {
-        setStatus("Failed to build rig profile export.");
-        return null;
-      }
-      const suggestedFilename = buildSuggestedRigProfileDownloadName(payload, filename);
-      const registerCommand = buildRegisterRigProfileCommand({
-        filename: suggestedFilename,
-        allowDraft,
-        payload,
-      });
-      payload.suggestedFilename = suggestedFilename;
-      payload.registerCommand = registerCommand;
-      window.__vid2modelRigProfileExport = payload;
-      window.__vid2modelRigProfileExportCommand = registerCommand;
-      if (download) {
-        const blob = new Blob([JSON.stringify(payload, null, 2)], {
-          type: "application/json",
-        });
-        const href = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = href;
-        anchor.download = suggestedFilename;
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        setTimeout(() => URL.revokeObjectURL(href), 0);
-      }
-      setStatus(`Rig profile exported [${payload.stage}] (${payload.modelLabel || payload.modelFingerprint}).`);
-      console.log("[vid2model/diag] rig-profile-export", payload);
-      console.log("[vid2model/diag] rig-profile-register-command", registerCommand);
-      return payload;
+      return exportRigProfileWithService(download, filename, allowDraft, { setStatus });
     }
 
     function importRigProfilePayload(payload, autoRetarget = true) {
-      const format = String(payload?.format || "").trim();
-      const profile = normalizeRigProfileEntry(payload?.profile || payload);
-      if (!profile) {
-        throw new Error("Invalid rig profile payload");
-      }
-      if (format && format !== "vid2model.rig-profile.v1") {
-        throw new Error(`Unsupported rig profile format: ${format}`);
-      }
-      const saved = saveRigProfile(
-        {
-          ...profile,
-          modelLabel: String(payload?.modelLabel || profile.modelLabel || ""),
-          modelFingerprint: String(payload?.modelFingerprint || profile.modelFingerprint || ""),
-          stage: String(payload?.stage || profile.stage || ""),
-          source: "imported-json",
-        },
-        {
-          validationStatus: "validated",
-          overwriteValidated: true,
-        }
-      );
-      const imported = loadRigProfile(
-        String(payload?.modelFingerprint || profile.modelFingerprint || ""),
-        String(payload?.stage || profile.stage || ""),
-        String(payload?.modelLabel || profile.modelLabel || "")
-      );
-      publishRigProfileState(buildRigProfileState(imported, {
-        modelFingerprint: imported?.modelFingerprint || profile.modelFingerprint,
-        modelLabel: imported?.modelLabel || profile.modelLabel,
-        stage: imported?.stage || profile.stage,
-        saved,
-      }));
-      const matchesCurrentModel =
-        imported &&
-        imported.modelFingerprint === modelRigFingerprint &&
-        imported.stage === getRetargetStage();
-      setStatus(
-        matchesCurrentModel
-          ? `Rig profile imported and ready [${imported.stage}].`
-          : `Rig profile imported for ${imported?.modelLabel || imported?.modelFingerprint || "model"}.`
-      );
-      console.log("[vid2model/diag] rig-profile-import", imported);
-      if (matchesCurrentModel && autoRetarget && sourceResult && modelSkinnedMesh) {
-        applyBvhToModel();
-      }
-      return imported;
+      return importRigProfilePayloadWithService(payload, {
+        modelRigFingerprint,
+        autoRetarget,
+        sourceResult,
+        modelSkinnedMesh,
+        setStatus,
+        onAutoRetarget: () => applyBvhToModel(),
+      });
     }
 
     async function importRigProfileFile() {
@@ -1266,6 +873,24 @@
     const {
       exportCurrentModelSkeletonProfile,
     } = skeletonProfileTools;
+
+    const modelAnalysisTools = createViewerModelAnalysisTools({
+      windowRef: window,
+      buildCanonicalBoneMap,
+      canonicalBoneKey,
+      getModelSkinnedMeshes: () => modelSkinnedMeshes,
+      getModelLabel: () => modelLabel,
+      getModelRigFingerprint: () => modelRigFingerprint,
+      getModelSkeletonRootBone,
+      getModelVrmHumanoidBones: () => modelVrmHumanoidBones,
+      getModelVrmNormalizedHumanoidBones: () => modelVrmNormalizedHumanoidBones,
+    });
+
+    const {
+      exportCurrentModelAnalysis,
+      buildRigProfileSeedForCurrentModel,
+      buildSeedCorrectionSummary,
+    } = modelAnalysisTools;
 
     const skeletonDebugTools = createViewerSkeletonDebugTools({
       canonicalBoneKey,
@@ -2014,6 +1639,8 @@
         if (!liveRetarget && selectedIsSkeletonUtils && !useLiveDelta) {
           const profileRootYawDeg =
             Number.isFinite(cachedRigProfile?.rootYawDeg) ? cachedRigProfile.rootYawDeg : null;
+          const sourceClipYawSummary = summarizeSourceRootYawClip(clip);
+          const sourceClipYawLooksCentered = !!sourceClipYawSummary.looksCentered;
           let zeroRow = null;
           let bestRow = null;
           let shouldUseBest = false;
@@ -2022,7 +1649,9 @@
           if (Number.isFinite(profileRootYawDeg)) {
             rootYawCorrection = applyModelRootYaw(THREE.MathUtils.degToRad(profileRootYawDeg));
           } else {
-            const yawCandidates = buildRootYawCandidates(rawFacingYaw, quantizeFacingYaw);
+            const yawCandidates = buildRootYawCandidates(rawFacingYaw, quantizeFacingYaw, {
+              sourceClipYawSummary,
+            });
             yawEval = evaluateRootYawCandidates({
               candidates: yawCandidates,
               sampleTime: selectedProbe?.sampleTime || 0,
@@ -2046,9 +1675,16 @@
             zeroRow = yawEval.rows.find((r) => Math.abs(r.yawDeg) < 0.01) || null;
             bestRow = yawEval.rows[0] || null;
             const bestIsLargeFlip = !!bestRow && Math.abs(bestRow.yawDeg) > 120;
+            const largeFlipLooksRedundant =
+              !!bestRow &&
+              !!zeroRow &&
+              sourceClipYawLooksCentered &&
+              bestIsLargeFlip &&
+              bestRow.score + 0.08 >= zeroRow.score;
             shouldUseBest =
               !!bestRow &&
               !(rawYawLooksAligned && bestIsLargeFlip) &&
+              !largeFlipLooksRedundant &&
               (
                 !zeroRow ||
                 bestRow.score + 0.03 < zeroRow.score ||
@@ -2123,6 +1759,10 @@
             strongFacingMismatch,
             usedBestCandidate: shouldUseBest,
             usedProfileYaw: Number.isFinite(profileRootYawDeg),
+            sourceClipYawSummary,
+            sourceYawCandidatePolicy: {
+              allowSourceFlipCandidates: !sourceClipYawLooksCentered,
+            },
             zeroCandidate: zeroRow,
             bestCandidate: bestRow,
             candidates: yawEval.rows,
@@ -2531,7 +2171,7 @@
         const candidateInfo = canonicalCandidates > 0 ? `, humanoid targets ${matched}/${canonicalCandidates}` : "";
         const activeMeshCount = liveRetarget ? liveRetarget.uniqueSkeletons.length : modelMixers.length;
         if (Number.isFinite(postRetargetPoseError) && postRetargetPoseError <= 0.75) {
-          latestRigProfileCandidate = {
+          const nextRigProfileCandidate = {
             modelLabel,
             modelFingerprint: modelRigFingerprint,
             stage: retargetStage,
@@ -2542,14 +2182,23 @@
             liveRetarget: liveRetarget ? exportLiveRetargetProfile(liveRetarget) : null,
             basedOnBuiltin: cachedRigProfile?.id || cachedRigProfile?.basedOnBuiltin || null,
           };
+          setLatestRigProfileCandidate(nextRigProfileCandidate);
           rigProfileSaved = saveRigProfile({
-            ...latestRigProfileCandidate,
+            ...nextRigProfileCandidate,
             source: "localStorage",
           });
         }
         const activeProfile =
           loadRigProfile(modelRigFingerprint, retargetStage, modelLabel) || cachedRigProfile || null;
         const profileStateLabel = activeProfile?.validationStatus || (activeProfile ? "cached" : "none");
+        const profileSourceLabel =
+          activeProfile?.source === "model-analysis-seed" ? "seed" : profileStateLabel;
+        const inferredCorrections = Array.isArray(activeProfile?.inferredCorrections)
+          ? activeProfile.inferredCorrections
+          : buildSeedCorrectionSummary(activeProfile);
+        const correctionInfo = inferredCorrections.length
+          ? `, inferred ${inferredCorrections.join("+")}`
+          : "";
         publishRigProfileState(buildRigProfileState(activeProfile, {
           modelFingerprint: modelRigFingerprint,
           modelLabel,
@@ -2557,7 +2206,7 @@
           saved: rigProfileSaved,
         }));
         setStatus(
-          `Model retargeted [${retargetStage}] (source ${sourceMatched}/${sourceTotal}${candidateInfo}, all ${matched}/${total}, tracks ${clip.tracks.length}, mode ${selectedModeLabel}, active meshes ${activeMeshCount}, profile ${profileStateLabel}).${lowMatch}`
+          `Model retargeted [${retargetStage}] (source ${sourceMatched}/${sourceTotal}${candidateInfo}, all ${matched}/${total}, tracks ${clip.tracks.length}, mode ${selectedModeLabel}, active meshes ${activeMeshCount}, profile ${profileSourceLabel}${correctionInfo}).${lowMatch}`
         );
         const unmatchedTargetBones = retargetTargetBones
           .map((b) => b.name)
@@ -2787,6 +2436,12 @@
 
     window.__vid2modelExportSkeletonProfile = (download = false, filename = "") =>
       exportCurrentModelSkeletonProfile(download, filename);
+    window.__vid2modelExportModelAnalysis = (download = false, filename = "") =>
+      exportCurrentModelAnalysis(download, filename);
+    window.__vid2modelBuildRigProfileSeed = (stage = getRetargetStage()) =>
+      buildRigProfileSeedForCurrentModel(stage);
+    window.__vid2modelAutoSetupModel = () => autoSetupModel();
+    window.__vid2modelSaveModelSetup = () => saveModelSetup();
     window.__vid2modelExportRigProfile = (download = false, filename = "", allowDraft = false) =>
       exportCurrentRigProfile(download, filename, allowDraft);
     window.__vid2modelImportRigProfile = (payload, autoRetarget = true) =>
@@ -2794,15 +2449,11 @@
     window.__vid2modelBuildRegisterRigProfileCommand = (inputPath = "", allowDraft = false) =>
       buildRegisterRigProfileCommand({ inputPath, allowDraft });
     window.__vid2modelListRepoRigProfiles = (fingerprint = modelRigFingerprint, stage = "") =>
-      (stage
-        ? findRepoRigProfiles(fingerprint, stage)
-        : repoRigProfiles.filter((entry) => !fingerprint || entry.modelFingerprint === fingerprint));
-    window.__vid2modelGetRigProfileState = () => ({ ...latestRigProfileState });
+      listRepoRigProfiles(fingerprint, stage);
+    window.__vid2modelGetRigProfileState = () => getLatestRigProfileState();
     window.__vid2modelValidateRigProfile = () => validateCurrentRigProfile();
     window.__vid2modelListRigProfiles = (fingerprint = modelRigFingerprint, stage = "") =>
-      (stage
-        ? findStoredRigProfiles(fingerprint, stage)
-        : readStoredRigProfiles().filter((entry) => !fingerprint || entry.modelFingerprint === fingerprint));
+      listRigProfiles(fingerprint, stage);
 
     const modelLoader = createViewerModelLoader({
       gltfLoader,
@@ -2834,6 +2485,49 @@
       }
     }
 
+    const viewerController = createViewerController({
+      setStatus,
+      loadBvhText,
+      loadModelFile,
+      loadDefault,
+      autoSetupModel,
+      saveModelSetup,
+      retarget: applyBvhToModel,
+      validateCurrentRigProfile,
+      exportCurrentRigProfile,
+      exportCurrentModelAnalysis,
+      importRigProfileFile,
+      zoomBy,
+      resetCamera: () => {
+        camera.position.set(260, 200, 260);
+        controls.target.set(0, 100, 0);
+        controls.update();
+        setStatus("Camera reset");
+      },
+      getActiveDuration,
+      updateTimelineUi,
+      getPlaybackState: () => ({
+        mixer,
+        modelMixers,
+        currentAction,
+        modelActions,
+        liveRetarget,
+        bodyLengthCalibration,
+        armLengthCalibration,
+        fingerLengthCalibration,
+      }),
+      setIsPlaying: (next) => {
+        isPlaying = !!next;
+      },
+      setIsScrubbing: (next) => {
+        isScrubbing = !!next;
+      },
+      applyLiveRetargetPose,
+      applyBoneLengthCalibration: (plan) => applyBoneLengthCalibration(plan, modelRoot),
+      applyFingerLengthCalibration: (plan) => applyFingerLengthCalibration(plan, modelRoot),
+      alignModelHipsToSource,
+    });
+
     setupViewerUi({
       elements: {
         fileInput,
@@ -2841,9 +2535,12 @@
         bvhFileNameEl,
         modelFileNameEl,
         btnLoadDefault,
+        btnAutoSetup,
+        btnSaveModelSetup,
         btnRetarget,
         btnValidateProfile,
         btnExportProfile,
+        btnExportModelAnalysis,
         btnImportProfile,
         btnRetargetFab,
         btnZoomIn,
@@ -2855,45 +2552,7 @@
         timeEl,
         btnResetCamera,
       },
-      ops: {
-        loadDefault,
-        applyBvhToModel,
-        validateCurrentRigProfile,
-        exportCurrentRigProfile,
-        importRigProfileFile,
-        zoomBy,
-        loadBvhText,
-        loadModelFile,
-        setStatus,
-        getActiveDuration,
-        updateTimelineUi,
-        setIsScrubbing: (next) => {
-          isScrubbing = !!next;
-        },
-        setIsPlaying: (next) => {
-          isPlaying = !!next;
-        },
-        getPlaybackRefs: () => ({
-          mixer,
-          modelMixers,
-          currentAction,
-          modelActions,
-          liveRetarget,
-          bodyLengthCalibration,
-          armLengthCalibration,
-          fingerLengthCalibration,
-        }),
-        applyLiveRetargetPose,
-        applyBoneLengthCalibration: (plan) => applyBoneLengthCalibration(plan, modelRoot),
-        applyFingerLengthCalibration: (plan) => applyFingerLengthCalibration(plan, modelRoot),
-        alignModelHipsToSource,
-        resetCamera: () => {
-          camera.position.set(260, 200, 260);
-          controls.target.set(0, 100, 0);
-          controls.update();
-          setStatus("Camera reset");
-        },
-      },
+      ops: viewerController,
     });
 
     function onResize() {

@@ -1,5 +1,8 @@
 import * as THREE from "three";
 import { canonicalBoneKey, normalizeBoneName, parseTrackName } from "./bone-utils.js";
+import { buildCanonicalBoneMap, canonicalBonePreferenceScore } from "./canonical-bone-map.js";
+
+export { buildCanonicalBoneMap } from "./canonical-bone-map.js";
 
 const RETARGET_ALIAS = new Map([
   ["pelvis", "hips"],
@@ -91,7 +94,10 @@ export function buildRetargetMap(targetBones, sourceBones, options = {}) {
     sourceByNorm.set(normalizeBoneName(bone.name), bone.name);
     const key = canonicalBoneKey(bone.name);
     if (key) {
-      sourceByCanonical.set(key, bone.name);
+      const existing = sourceByCanonical.get(key);
+      if (!existing || canonicalBonePreferenceScore(bone) > canonicalBonePreferenceScore({ name: existing })) {
+        sourceByCanonical.set(key, bone.name);
+      }
     }
     sourceNameSet.add(bone.name);
   }
@@ -342,16 +348,6 @@ export function collectLimbDiagnostics(targetBones, sourceBones, namesTargetToSo
 
   const issues = entries.filter((e) => e.target === "missing" || e.source === "missing" || !e.hasQ || !e.parentOk);
   return { total: entries.length, issuesCount: issues.length, issues, entries };
-}
-
-export function buildCanonicalBoneMap(bones) {
-  const map = new Map();
-  for (const bone of bones || []) {
-    const key = canonicalBoneKey(bone.name);
-    if (!key || map.has(key)) continue;
-    map.set(key, bone);
-  }
-  return map;
 }
 
 export function canonicalPoseSignature(boneMap, keys) {
