@@ -96,6 +96,22 @@ function buildLegChainPairs(pairs, side) {
   };
 }
 
+function buildArmChainPairs(pairs, side) {
+  if (!Array.isArray(pairs) || !side) return null;
+  const byCanonical = new Map(pairs.map((pair) => [pair.canonical, pair]));
+  const upper = byCanonical.get(`${side}UpperArm`) || null;
+  const lower = byCanonical.get(`${side}LowerArm`) || null;
+  const hand = byCanonical.get(`${side}Hand`) || null;
+  if (!upper || !lower || !hand) return null;
+  return {
+    side,
+    upper,
+    lower,
+    hand,
+    enableElbowPlaneCorrection: false,
+  };
+}
+
 export function buildVrmDirectBodyPlan({
   targetBones,
   sourceBones,
@@ -226,6 +242,7 @@ export function buildVrmDirectBodyPlan({
   modelRoot?.updateMatrixWorld(true);
 
   const legChains = [];
+  const armChains = [];
   if (profile?.enableKneePlaneCorrectionBySide?.left) {
     const leftChain = buildLegChainPairs(pairs, "left");
     if (leftChain) {
@@ -248,10 +265,25 @@ export function buildVrmDirectBodyPlan({
       legChains.push(rightChain);
     }
   }
+  if (profile?.enableElbowPlaneCorrectionBySide?.left) {
+    const leftArmChain = buildArmChainPairs(pairs, "left");
+    if (leftArmChain) {
+      leftArmChain.enableElbowPlaneCorrection = !!profile?.enableElbowPlaneCorrectionBySide?.left;
+      armChains.push(leftArmChain);
+    }
+  }
+  if (profile?.enableElbowPlaneCorrectionBySide?.right) {
+    const rightArmChain = buildArmChainPairs(pairs, "right");
+    if (rightArmChain) {
+      rightArmChain.enableElbowPlaneCorrection = !!profile?.enableElbowPlaneCorrectionBySide?.right;
+      armChains.push(rightArmChain);
+    }
+  }
 
   return {
     pairs,
     legChains,
+    armChains,
     uniqueSkeletons: [{ bones: targetBones || [] }],
     posScale,
     yawOffset: 0,
