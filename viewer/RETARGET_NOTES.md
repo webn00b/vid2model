@@ -19,7 +19,8 @@ Viewer выбирает профиль в таком порядке:
 1. local validated
 2. repo validated
 3. local draft
-4. built-in fallback
+4. auto-generated in-memory seed from current model analysis
+5. built-in fallback
 
 ## Что сейчас умеет rig profile
 
@@ -46,11 +47,14 @@ Viewer выбирает профиль в таком порядке:
 
 1. Загрузить `BVH`
 2. Загрузить `VRM` или `GLB`
-3. Запустить retarget
+3. Для обычного сценария нажать `Auto Setup`
 4. Проверить результат на модели
-5. Нажать `Validate Profile`, если результат хороший
-6. Нажать `Export Profile`, если профиль нужно перенести или положить в репозиторий
-7. Зарегистрировать профиль через `tools/register_rig_profile.py`
+5. Для обычного сценария нажать `Save Model Setup`
+6. Для advanced workflow можно отдельно использовать `Validate Profile`
+7. Нажать `Export Profile`, если профиль нужно перенести или положить в репозиторий
+8. Зарегистрировать профиль через `tools/register_rig_profile.py`
+
+Если source animation ещё нет, можно отдельно выгрузить `model-analysis.json` через `Export Model Analysis` и использовать его как основу для будущей model-specific calibration.
 
 ## Полезные runtime helpers
 
@@ -65,6 +69,10 @@ window.__vid2modelListRigProfiles()
 window.__vid2modelListRepoRigProfiles()
 
 window.__vid2modelExportRigProfile(true)
+window.__vid2modelExportModelAnalysis(true)
+window.__vid2modelBuildRigProfileSeed()
+window.__vid2modelAutoSetupModel()
+window.__vid2modelSaveModelSetup()
 window.__vid2modelImportRigProfile(payload)
 window.__vid2modelBuildRegisterRigProfileCommand()
 window.__vid2modelBuildRegisterRigProfileCommand("/absolute/path/to/exported.rig-profile.json")

@@ -1,9 +1,13 @@
 import unittest
+from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from vid2model_lib import pipeline
 from vid2model_lib.pipeline import DEFAULT_POSE_CORRECTIONS
+from vid2model_lib.pipeline_auto_pose import AUTO_POSE_PRESETS, build_pose_correction_profile
 from vid2model_lib.pipeline_channels import frame_channels as module_frame_channels
 from vid2model_lib.pipeline_mirror import looks_mirrored, mirror_pose_points
 from vid2model_lib.pipeline_retarget import (
@@ -177,6 +181,124 @@ class PipelineRetargetModuleTests(unittest.TestCase):
 
         self.assertAlmostEqual(float(min(foot_y)), 0.0, places=6)
 
+    def test_apply_pose_corrections_preserves_expressive_torso_depth(self) -> None:
+        pts = make_pose_points()
+        pts["spine"] = np.array([0.0, 10.0, 8.0], dtype=np.float64)
+        pts["chest"] = np.array([0.0, 20.0, 14.0], dtype=np.float64)
+        pts["upper_chest"] = np.array([0.0, 24.0, 18.0], dtype=np.float64)
+        pts["neck"] = np.array([0.0, 30.0, 20.0], dtype=np.float64)
+        pts["head"] = np.array([0.0, 40.0, 22.0], dtype=np.float64)
+
+        corrected = apply_pose_corrections(
+            pts,
+            replace(DEFAULT_POSE_CORRECTIONS, shoulder_tracking=False),
+        )
+
+        self.assertGreater(float(corrected["chest"][2]), 9.0)
+        self.assertGreater(float(corrected["head"][2]), 16.0)
+
+    def test_apply_pose_corrections_preserves_preset_specific_body_bend_strength(self) -> None:
+        pts = make_pose_points()
+        pts["spine"] = np.array([0.0, 10.0, 8.0], dtype=np.float64)
+        pts["chest"] = np.array([0.0, 20.0, 14.0], dtype=np.float64)
+        pts["upper_chest"] = np.array([0.0, 24.0, 18.0], dtype=np.float64)
+        pts["neck"] = np.array([0.0, 30.0, 20.0], dtype=np.float64)
+        pts["head"] = np.array([0.0, 40.0, 22.0], dtype=np.float64)
+
+        def preset_bend_profile(name: str):
+            return replace(
+                build_pose_correction_profile(AUTO_POSE_PRESETS[name]),
+                shoulder_tracking=False,
+                auto_grounding=False,
+                use_arm_ik=False,
+                use_leg_ik=False,
+                body_collider_mode=0,
+                arm_horizontal_offset_percent=0.0,
+                arm_vertical_offset_percent=0.0,
+                hip_depth_scale_percent=100.0,
+                hip_y_position_offset_percent=0.0,
+                hip_z_position_offset_percent=0.0,
+            )
+
+        low_camera = apply_pose_corrections(pts, preset_bend_profile("low_camera"))
+        wide_arms = apply_pose_corrections(pts, preset_bend_profile("wide_arms"))
+        crouched = apply_pose_corrections(pts, preset_bend_profile("crouched"))
+
+        self.assertLess(float(low_camera["chest"][2]), float(wide_arms["chest"][2]))
+        self.assertLess(float(wide_arms["chest"][2]), float(crouched["chest"][2]))
+        self.assertGreater(float(wide_arms["chest"][2] - low_camera["chest"][2]), 0.5)
+        self.assertGreater(float(crouched["chest"][2] - wide_arms["chest"][2]), 0.5)
+
+    def test_apply_pose_corrections_softens_near_body_arm_and_leg_ik(self) -> None:
+        pts = make_pose_points()
+        pts["left_elbow"] = np.array([-1.0, 18.0, 0.0], dtype=np.float64)
+        pts["right_elbow"] = np.array([1.0, 18.0, 0.0], dtype=np.float64)
+        pts["left_wrist"] = np.array([-0.5, 14.0, 0.0], dtype=np.float64)
+        pts["right_wrist"] = np.array([0.5, 14.0, 0.0], dtype=np.float64)
+        pts["left_knee"] = np.array([-0.4, -15.0, 0.0], dtype=np.float64)
+        pts["right_knee"] = np.array([0.4, -15.0, 0.0], dtype=np.float64)
+        pts["left_ankle"] = np.array([-0.2, -30.0, 0.0], dtype=np.float64)
+        pts["right_ankle"] = np.array([0.2, -30.0, 0.0], dtype=np.float64)
+
+        corrected = apply_pose_corrections(pts, DEFAULT_POSE_CORRECTIONS)
+
+        self.assertLess(abs(float(corrected["left_wrist"][0])), 3.0)
+        self.assertLess(abs(float(corrected["right_wrist"][0])), 3.0)
+        self.assertLess(abs(float(corrected["left_elbow"][0])), 2.5)
+        self.assertLess(abs(float(corrected["right_elbow"][0])), 2.5)
+        self.assertLess(abs(float(corrected["left_ankle"][0])), 1.0)
+        self.assertLess(abs(float(corrected["right_ankle"][0])), 1.0)
+
+    def test_apply_pose_corrections_preserves_compact_limbs_without_forcing_full_width(self) -> None:
+        pts = make_pose_points()
+        pts["left_elbow"] = np.array([-0.6, 18.0, 0.0], dtype=np.float64)
+        pts["right_elbow"] = np.array([0.6, 18.0, 0.0], dtype=np.float64)
+        pts["left_wrist"] = np.array([-0.3, 14.0, 0.0], dtype=np.float64)
+        pts["right_wrist"] = np.array([0.3, 14.0, 0.0], dtype=np.float64)
+        pts["left_hand"] = np.array([-0.2, 13.0, 0.0], dtype=np.float64)
+        pts["right_hand"] = np.array([0.2, 13.0, 0.0], dtype=np.float64)
+        pts["left_knee"] = np.array([-0.25, -15.0, 0.0], dtype=np.float64)
+        pts["right_knee"] = np.array([0.25, -15.0, 0.0], dtype=np.float64)
+        pts["left_ankle"] = np.array([-0.15, -30.0, 0.0], dtype=np.float64)
+        pts["right_ankle"] = np.array([0.15, -30.0, 0.0], dtype=np.float64)
+
+        corrected = apply_pose_corrections(pts, DEFAULT_POSE_CORRECTIONS)
+
+        self.assertLess(abs(float(corrected["left_elbow"][0])), 1.5)
+        self.assertLess(abs(float(corrected["right_elbow"][0])), 1.5)
+        self.assertLess(abs(float(corrected["left_wrist"][0])), 1.4)
+        self.assertLess(abs(float(corrected["right_wrist"][0])), 1.4)
+        self.assertLess(abs(float(corrected["left_hand"][0])), 1.4)
+        self.assertLess(abs(float(corrected["right_hand"][0])), 1.4)
+        self.assertLess(abs(float(corrected["left_ankle"][0])), 0.5)
+        self.assertLess(abs(float(corrected["right_ankle"][0])), 0.5)
+
+    def test_apply_pose_corrections_keeps_crossed_limbs_separated_on_bad_input(self) -> None:
+        pts = make_pose_points()
+        pts["left_elbow"] = np.array([1.5, 18.0, 0.0], dtype=np.float64)
+        pts["right_elbow"] = np.array([-1.5, 18.0, 0.0], dtype=np.float64)
+        pts["left_wrist"] = np.array([2.5, 14.0, 0.0], dtype=np.float64)
+        pts["right_wrist"] = np.array([-2.5, 14.0, 0.0], dtype=np.float64)
+        pts["left_hand"] = np.array([3.0, 13.0, 0.0], dtype=np.float64)
+        pts["right_hand"] = np.array([-3.0, 13.0, 0.0], dtype=np.float64)
+        pts["left_knee"] = np.array([0.8, -15.0, 0.0], dtype=np.float64)
+        pts["right_knee"] = np.array([-0.8, -15.0, 0.0], dtype=np.float64)
+        pts["left_ankle"] = np.array([0.6, -30.0, 0.0], dtype=np.float64)
+        pts["right_ankle"] = np.array([-0.6, -30.0, 0.0], dtype=np.float64)
+        pts["left_toes"] = np.array([0.5, -30.0, 8.0], dtype=np.float64)
+        pts["right_toes"] = np.array([-0.5, -30.0, 8.0], dtype=np.float64)
+
+        corrected = apply_pose_corrections(pts, DEFAULT_POSE_CORRECTIONS)
+
+        self.assertLess(float(corrected["left_wrist"][0]), -2.0)
+        self.assertGreater(float(corrected["right_wrist"][0]), 2.0)
+        self.assertLess(float(corrected["left_hand"][0]), -2.0)
+        self.assertGreater(float(corrected["right_hand"][0]), 2.0)
+        self.assertLess(float(corrected["left_ankle"][0]), -0.6)
+        self.assertGreater(float(corrected["right_ankle"][0]), 0.6)
+        self.assertLess(float(corrected["left_toes"][0]), -0.6)
+        self.assertGreater(float(corrected["right_toes"][0]), 0.6)
+
     def test_quality_summary_flags_risky_tracking(self) -> None:
         quality = pipeline._build_quality_summary(
             source_frame_count=100,
@@ -262,6 +384,135 @@ class PipelineRetargetModuleTests(unittest.TestCase):
             evaluation["root_position_jitter"]["improvement_ratio"],
             0.0,
         )
+
+    def test_convert_video_to_bvh_reports_source_stages_in_diagnostics(self) -> None:
+        base = make_pose_points()
+        frames = []
+        for dx in (0.0, 0.3, -0.2, 0.1):
+            frame = {key: np.array(value, dtype=np.float64) + np.array([dx, 0.0, 0.0], dtype=np.float64) for key, value in base.items()}
+            frames.append(frame)
+
+        scan_stats = {
+            "detected": len(frames),
+            "roi_used": 0,
+            "roi_fallback": 0,
+            "roi_resets": 0,
+            "pose_backend": "tasks",
+        }
+
+        with patch(
+            "vid2model_lib.pipeline.collect_detected_pose_samples",
+            return_value=(30.0, frames, frames[:2], scan_stats),
+        ):
+            *_unused, diagnostics = pipeline.convert_video_to_bvh(
+                input_path=Path("synthetic.mp4"),
+                model_complexity=1,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+                include_source_stage_diagnostics=True,
+            )
+
+        source_stages = diagnostics.get("source_stages")
+        self.assertIsInstance(source_stages, dict)
+        assert isinstance(source_stages, dict)
+        self.assertIn("pose", source_stages)
+        self.assertIn("motion", source_stages)
+
+        pose = source_stages["pose"]
+        self.assertIn("stages", pose)
+        self.assertIn("comparisons", pose)
+        self.assertIn("flags", pose)
+        self.assertIn("filled_source", pose["stages"])
+        self.assertIn("final_source", pose["stages"])
+        self.assertIn("source_pipeline_risk", pose["flags"])
+        self.assertIn("suspected_issue_stage", pose["flags"])
+
+        motion = source_stages["motion"]
+        self.assertIn("stages", motion)
+        self.assertIn("comparisons", motion)
+        self.assertIn("flags", motion)
+        self.assertIn("pre_root_yaw", motion["stages"])
+        self.assertIn("post_root_yaw", motion["stages"])
+        self.assertIn("final_motion", motion["stages"])
+        self.assertIn("source_motion_risk", motion["flags"])
+        self.assertIn("suspected_issue_stage", motion["flags"])
+
+    def test_source_motion_stage_diagnostics_flags_finalize_spikes(self) -> None:
+        pre_yaw = [
+            [0.0, 0.0, 0.0, 2.0, 1.0, 5.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.2, 1.1, 6.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.4, 1.2, 7.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.5, 1.3, 8.0, 0.0, 0.0],
+        ]
+        post_yaw = [
+            [0.0, 0.0, 0.0, 2.1, 1.1, 5.2, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.3, 1.1, 6.1, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.6, 1.2, 7.2, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.7, 1.3, 8.0, 0.0, 0.0],
+        ]
+        final = [
+            [0.0, 0.0, 0.0, 3.0, 1.0, 5.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 170.0, 1.1, 6.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 20.0, 1.2, 7.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 190.0, 1.3, 8.0, 0.0, 0.0],
+        ]
+
+        diagnostics = pipeline._build_source_motion_stage_diagnostics(pre_yaw, post_yaw, final)
+
+        self.assertTrue(diagnostics["flags"]["rotation_jump_increase_after_finalize"])
+        self.assertTrue(diagnostics["flags"]["source_motion_risk"])
+        self.assertEqual(diagnostics["flags"]["suspected_issue_stage"], "motion_finalize")
+
+    def test_source_motion_stage_diagnostics_ignores_wraparound_steps(self) -> None:
+        pre_yaw = [
+            [0.0, 0.0, 0.0, 10.0, 1.0, 170.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 11.0, 1.1, 175.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 12.0, 1.2, 179.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 13.0, 1.3, -179.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 14.0, 1.4, -174.0, 0.0, 0.0],
+        ]
+        post_yaw = [
+            [0.0, 0.0, 0.0, 10.5, 1.0, 171.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 11.5, 1.1, 176.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 12.5, 1.2, -179.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 13.5, 1.3, -176.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 14.5, 1.4, -170.0, 0.0, 0.0],
+        ]
+        final = [list(row) for row in post_yaw]
+
+        diagnostics = pipeline._build_source_motion_stage_diagnostics(pre_yaw, post_yaw, final)
+
+        self.assertFalse(diagnostics["flags"]["yaw_normalization_spike"])
+        self.assertFalse(diagnostics["flags"]["rotation_jump_increase_after_finalize"])
+        self.assertFalse(diagnostics["flags"]["final_rotation_jump_risk"])
+        self.assertFalse(diagnostics["flags"]["source_motion_risk"])
+
+    def test_convert_video_to_bvh_skips_source_stages_by_default(self) -> None:
+        base = make_pose_points()
+        frames = [
+            {key: np.array(value, dtype=np.float64) for key, value in base.items()}
+            for _ in range(4)
+        ]
+        scan_stats = {
+            "detected": len(frames),
+            "roi_used": 0,
+            "roi_fallback": 0,
+            "roi_resets": 0,
+            "pose_backend": "tasks",
+        }
+
+        with patch(
+            "vid2model_lib.pipeline.collect_detected_pose_samples",
+            return_value=(30.0, frames, frames[:2], scan_stats),
+        ):
+            *_unused, diagnostics = pipeline.convert_video_to_bvh(
+                input_path=Path("synthetic.mp4"),
+                model_complexity=1,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+
+        self.assertNotIn("source_stages", diagnostics)
 
 
 class PipelineMirrorModuleTests(unittest.TestCase):

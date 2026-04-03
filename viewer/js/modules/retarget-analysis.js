@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { canonicalBoneKey, parseTrackName } from "./bone-utils.js";
+import { buildViewerRootYawCandidates } from "./root-yaw-contract.js";
 
 function estimateBoneSetHeight(bones) {
   if (!bones?.length) return null;
@@ -243,23 +244,58 @@ export function computeHipsYawError(targetBones, sourceBones, namesTargetToSourc
   return Number.isFinite(angle) ? angle : 0;
 }
 
-export function buildRootYawCandidates(rawFacingYaw, quantizeFacingYaw) {
-  const set = new Set();
-  const list = [];
-  const push = (v) => {
-    if (!Number.isFinite(v)) return;
-    let a = Math.atan2(Math.sin(v), Math.cos(v));
-    if (Math.abs(a) < 1e-6) a = 0;
-    const key = Number(a.toFixed(6));
-    if (set.has(key)) return;
-    set.add(key);
-    list.push(a);
+export function buildRootYawCandidates(rawFacingYaw, quantizeFacingYaw, options = {}) {
+  return buildViewerRootYawCandidates(rawFacingYaw, quantizeFacingYaw, options);
+}
+
+export function summarizeSourceRootYawClip(sourceClip) {
+  const empty = {
+    sampleCount: 0,
+    absMedianYawDeg: 0,
+    nearZeroRatio: 0,
+    nearPiRatio: 0,
+    looksCentered: false,
   };
-  push(0);
-  push(Math.PI);
-  push(-Math.PI);
-  push(quantizeFacingYaw(-rawFacingYaw));
-  push(quantizeFacingYaw(Math.PI - rawFacingYaw));
-  push(-rawFacingYaw);
-  return list;
+  if (!sourceClip?.tracks?.length) return empty;
+
+  const rootTrack = sourceClip.tracks.find((track) => {
+    const parsed = parseTrackName(track.name);
+    return parsed?.property === "quaternion" && canonicalBoneKey(parsed.bone) === "hips";
+  });
+  const values = rootTrack?.values;
+  if (!values?.length || values.length < 4) return empty;
+
+  const q = new THREE.Quaternion();
+  const euler = new THREE.Euler(0, 0, 0, "YXZ");
+  const yawValues = [];
+  for (let i = 0; i <= values.length - 4; i += 4) {
+    q.set(values[i], values[i + 1], values[i + 2], values[i + 3]).normalize();
+    euler.setFromQuaternion(q, "YXZ");
+    let yawDeg = THREE.MathUtils.radToDeg(euler.y);
+    yawDeg = ((yawDeg + 180) % 360 + 360) % 360 - 180;
+    if (Number.isFinite(yawDeg)) {
+      yawValues.push(yawDeg);
+    }
+  }
+  if (!yawValues.length) return empty;
+
+  const absYaw = yawValues.map((v) => Math.abs(v)).sort((a, b) => a - b);
+  const medianIndex = Math.floor(absYaw.length / 2);
+  const absMedianYawDeg =
+    absYaw.length % 2 === 0
+      ? (absYaw[medianIndex - 1] + absYaw[medianIndex]) / 2
+      : absYaw[medianIndex];
+  const nearZero = yawValues.filter((v) => Math.abs(v) < 35).length;
+  const nearPi = yawValues.filter((v) => Math.abs(Math.abs(v) - 180) < 35).length;
+  const sampleCount = yawValues.length;
+  const nearZeroRatio = nearZero / sampleCount;
+  const nearPiRatio = nearPi / sampleCount;
+
+  return {
+    sampleCount,
+    absMedianYawDeg: Number(absMedianYawDeg.toFixed(2)),
+    nearZeroRatio: Number(nearZeroRatio.toFixed(3)),
+    nearPiRatio: Number(nearPiRatio.toFixed(3)),
+    looksCentered: nearZeroRatio >= 0.55 && nearZeroRatio >= nearPiRatio && absMedianYawDeg < 35,
+  };
 }

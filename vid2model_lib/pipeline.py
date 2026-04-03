@@ -310,6 +310,270 @@ def _build_cleanup_evaluation(
     }
 
 
+def _finite_point(frame: Dict[str, np.ndarray], key: str) -> Optional[np.ndarray]:
+    point = frame.get(key)
+    if point is None:
+        return None
+    arr = np.array(point, dtype=np.float64)
+    if arr.shape[0] < 3 or not np.isfinite(arr).all():
+        return None
+    return arr
+
+
+def _median_joint_distance(frames_pts: List[Dict[str, np.ndarray]], a_key: str, b_key: str) -> float:
+    distances: List[float] = []
+    for frame in frames_pts:
+        a = _finite_point(frame, a_key)
+        b = _finite_point(frame, b_key)
+        if a is None or b is None:
+            continue
+        distances.append(float(np.linalg.norm(a - b)))
+    if not distances:
+        return 0.0
+    return float(np.median(np.array(distances, dtype=np.float64)))
+
+
+def _joint_distance_cv(frames_pts: List[Dict[str, np.ndarray]], a_key: str, b_key: str) -> float:
+    distances: List[float] = []
+    for frame in frames_pts:
+        a = _finite_point(frame, a_key)
+        b = _finite_point(frame, b_key)
+        if a is None or b is None:
+            continue
+        distances.append(float(np.linalg.norm(a - b)))
+    if len(distances) < 2:
+        return 0.0
+    arr = np.array(distances, dtype=np.float64)
+    mean = float(np.mean(arr))
+    if abs(mean) <= 1e-8:
+        return 0.0
+    return float(np.std(arr) / abs(mean))
+
+
+def _lr_inversion_ratio(frames_pts: List[Dict[str, np.ndarray]], left_key: str, right_key: str, axis: int = 0) -> float:
+    usable = 0
+    inverted = 0
+    for frame in frames_pts:
+        left = _finite_point(frame, left_key)
+        right = _finite_point(frame, right_key)
+        if left is None or right is None:
+            continue
+        usable += 1
+        if float(left[axis]) > float(right[axis]):
+            inverted += 1
+    if usable <= 0:
+        return 0.0
+    return float(inverted / usable)
+
+
+def _build_source_pose_stage_summary(frames_pts: List[Dict[str, np.ndarray]]) -> Dict[str, float]:
+    left_foot_spread = _foot_contact_spread_metric(frames_pts, "left")
+    right_foot_spread = _foot_contact_spread_metric(frames_pts, "right")
+    left_wrist_energy = _frame_step_energy(frames_pts, "left_wrist", axes=(0, 1, 2))
+    right_wrist_energy = _frame_step_energy(frames_pts, "right_wrist", axes=(0, 1, 2))
+
+    return {
+        "frame_count": float(len(frames_pts)),
+        "root_position_jitter": _frame_step_energy(frames_pts, "mid_hip", axes=(0, 2)),
+        "root_height_jitter": _frame_step_energy(frames_pts, "mid_hip", axes=(1,)),
+        "foot_contact_spread_mean": float((left_foot_spread + right_foot_spread) * 0.5),
+        "wrist_motion_energy_mean": float((left_wrist_energy + right_wrist_energy) * 0.5),
+        "shoulder_width_median": _median_joint_distance(frames_pts, "left_shoulder", "right_shoulder"),
+        "hip_width_median": _median_joint_distance(frames_pts, "left_hip", "right_hip"),
+        "shoulder_width_cv": _joint_distance_cv(frames_pts, "left_shoulder", "right_shoulder"),
+        "hip_width_cv": _joint_distance_cv(frames_pts, "left_hip", "right_hip"),
+        "shoulder_lr_inversion_ratio": _lr_inversion_ratio(frames_pts, "left_shoulder", "right_shoulder"),
+        "hip_lr_inversion_ratio": _lr_inversion_ratio(frames_pts, "left_hip", "right_hip"),
+    }
+
+
+def _source_pose_stage_compare(before: Dict[str, float], after: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+    return {
+        "root_position_jitter": _ratio_delta(before["root_position_jitter"], after["root_position_jitter"], invert=True),
+        "root_height_jitter": _ratio_delta(before["root_height_jitter"], after["root_height_jitter"], invert=True),
+        "foot_contact_spread_mean": _ratio_delta(
+            before["foot_contact_spread_mean"],
+            after["foot_contact_spread_mean"],
+            invert=True,
+        ),
+        "shoulder_lr_inversion_ratio": _ratio_delta(
+            before["shoulder_lr_inversion_ratio"],
+            after["shoulder_lr_inversion_ratio"],
+            invert=True,
+        ),
+        "hip_lr_inversion_ratio": _ratio_delta(
+            before["hip_lr_inversion_ratio"],
+            after["hip_lr_inversion_ratio"],
+            invert=True,
+        ),
+    }
+
+
+def _build_source_pose_stage_diagnostics(stage_frames: Dict[str, List[Dict[str, np.ndarray]]]) -> Dict[str, Any]:
+    stages = {name: _build_source_pose_stage_summary(frames) for name, frames in stage_frames.items()}
+    comparisons: Dict[str, Any] = {}
+    pairs = [
+        ("filled_source", "canonical"),
+        ("canonical", "corrected_pre_cleanup"),
+        ("corrected_pre_cleanup", "post_cleanup_pre_loop"),
+        ("post_cleanup_pre_loop", "final_source"),
+    ]
+    for before_name, after_name in pairs:
+        if before_name in stages and after_name in stages:
+            comparisons[f"{before_name}_to_{after_name}"] = _source_pose_stage_compare(
+                stages[before_name],
+                stages[after_name],
+            )
+
+    filled = stages.get("filled_source", {})
+    final_stage = stages.get("final_source", {})
+    canonical_to_corrected = comparisons.get("canonical_to_corrected_pre_cleanup", {})
+    corrected_to_cleanup = comparisons.get("corrected_pre_cleanup_to_post_cleanup_pre_loop", {})
+    cleanup_to_final = comparisons.get("post_cleanup_pre_loop_to_final_source", {})
+
+    def _improvement(stage_delta: Dict[str, Any], key: str) -> float:
+        value = stage_delta.get(key)
+        if not isinstance(value, dict):
+            return 0.0
+        return float(value.get("improvement_ratio", 0.0))
+
+    early_stage_instability = (
+        float(filled.get("shoulder_lr_inversion_ratio", 0.0)) > 0.15
+        or float(filled.get("hip_lr_inversion_ratio", 0.0)) > 0.15
+        or float(filled.get("shoulder_width_cv", 0.0)) > 0.35
+    )
+    corrections_degraded_root = _improvement(canonical_to_corrected, "root_position_jitter") < -0.25
+    cleanup_degraded_root = _improvement(corrected_to_cleanup, "root_position_jitter") < -0.15
+    final_stage_degraded_root = _improvement(cleanup_to_final, "root_position_jitter") < -0.15
+    final_lr_risk = (
+        float(final_stage.get("shoulder_lr_inversion_ratio", 0.0)) > 0.12
+        or float(final_stage.get("hip_lr_inversion_ratio", 0.0)) > 0.12
+    )
+    source_pipeline_risk = (
+        early_stage_instability
+        or corrections_degraded_root
+        or cleanup_degraded_root
+        or final_stage_degraded_root
+        or final_lr_risk
+    )
+
+    suspected_issue_stage = "viewer_likely"
+    if early_stage_instability:
+        suspected_issue_stage = "pre_corrections"
+    elif corrections_degraded_root:
+        suspected_issue_stage = "pose_corrections"
+    elif cleanup_degraded_root:
+        suspected_issue_stage = "cleanup"
+    elif final_stage_degraded_root or final_lr_risk:
+        suspected_issue_stage = "post_cleanup"
+
+    return {
+        "stages": stages,
+        "comparisons": comparisons,
+        "flags": {
+            "early_stage_instability": early_stage_instability,
+            "corrections_degraded_root": corrections_degraded_root,
+            "cleanup_degraded_root": cleanup_degraded_root,
+            "final_stage_degraded_root": final_stage_degraded_root,
+            "final_lr_risk": final_lr_risk,
+            "source_pipeline_risk": source_pipeline_risk,
+            "suspected_issue_stage": suspected_issue_stage,
+        },
+    }
+
+
+def _large_rotation_step_ratio(motion_values: List[List[float]], threshold_deg: float = 120.0) -> float:
+    if len(motion_values) < 2:
+        return 0.0
+    changed = 0
+    total = 0
+    for idx in range(1, len(motion_values)):
+        prev = np.array(motion_values[idx - 1][3:], dtype=np.float64)
+        cur = np.array(motion_values[idx][3:], dtype=np.float64)
+        if prev.size == 0 or cur.size == 0:
+            continue
+        diff = np.abs((cur - prev + 180.0) % 360.0 - 180.0)
+        changed += int(np.count_nonzero(diff > float(threshold_deg)))
+        total += int(diff.size)
+    if total <= 0:
+        return 0.0
+    return float(changed / total)
+
+
+def _build_source_motion_stage_summary(motion_values: List[List[float]]) -> Dict[str, float]:
+    if not motion_values:
+        return {
+            "frame_count": 0.0,
+            "root_yaw_abs_median_deg": 0.0,
+            "root_yaw_step_mean_deg": 0.0,
+            "root_yaw_step_max_deg": 0.0,
+            "large_rotation_step_ratio": 0.0,
+        }
+
+    root_yaw = np.array([float(frame[5]) if len(frame) > 5 else 0.0 for frame in motion_values], dtype=np.float64)
+    root_yaw_steps = np.abs((np.diff(root_yaw) + 180.0) % 360.0 - 180.0)
+    return {
+        "frame_count": float(len(motion_values)),
+        "root_yaw_abs_median_deg": float(np.median(np.abs(root_yaw))),
+        "root_yaw_step_mean_deg": float(np.mean(root_yaw_steps)) if root_yaw_steps.size > 0 else 0.0,
+        "root_yaw_step_max_deg": float(np.max(root_yaw_steps)) if root_yaw_steps.size > 0 else 0.0,
+        "large_rotation_step_ratio": _large_rotation_step_ratio(motion_values),
+    }
+
+
+def _source_motion_stage_compare(before: Dict[str, float], after: Dict[str, float]) -> Dict[str, Dict[str, float]]:
+    return {
+        "root_yaw_step_mean_deg": _ratio_delta(before["root_yaw_step_mean_deg"], after["root_yaw_step_mean_deg"], invert=True),
+        "root_yaw_step_max_deg": _ratio_delta(before["root_yaw_step_max_deg"], after["root_yaw_step_max_deg"], invert=True),
+        "large_rotation_step_ratio": _ratio_delta(
+            before["large_rotation_step_ratio"],
+            after["large_rotation_step_ratio"],
+            invert=True,
+        ),
+    }
+
+
+def _build_source_motion_stage_diagnostics(
+    pre_yaw_motion: List[List[float]],
+    post_yaw_motion: List[List[float]],
+    final_motion: List[List[float]],
+) -> Dict[str, Any]:
+    stages = {
+        "pre_root_yaw": _build_source_motion_stage_summary(pre_yaw_motion),
+        "post_root_yaw": _build_source_motion_stage_summary(post_yaw_motion),
+        "final_motion": _build_source_motion_stage_summary(final_motion),
+    }
+    comparisons = {
+        "pre_root_yaw_to_post_root_yaw": _source_motion_stage_compare(stages["pre_root_yaw"], stages["post_root_yaw"]),
+        "post_root_yaw_to_final_motion": _source_motion_stage_compare(stages["post_root_yaw"], stages["final_motion"]),
+    }
+
+    pre_to_post = comparisons["pre_root_yaw_to_post_root_yaw"]
+    post_to_final = comparisons["post_root_yaw_to_final_motion"]
+    yaw_normalization_spike = float(pre_to_post["root_yaw_step_mean_deg"]["improvement_ratio"]) < -0.2
+    rotation_jump_increase_after_finalize = float(post_to_final["large_rotation_step_ratio"]["improvement_ratio"]) < -0.2
+    final_rotation_jump_risk = float(stages["final_motion"]["large_rotation_step_ratio"]) > 0.015
+    source_motion_risk = yaw_normalization_spike or rotation_jump_increase_after_finalize or final_rotation_jump_risk
+
+    suspected_issue_stage = "pose_pipeline_likely"
+    if yaw_normalization_spike:
+        suspected_issue_stage = "root_yaw_normalization"
+    elif rotation_jump_increase_after_finalize or final_rotation_jump_risk:
+        suspected_issue_stage = "motion_finalize"
+
+    return {
+        "stages": stages,
+        "comparisons": comparisons,
+        "flags": {
+            "yaw_normalization_spike": yaw_normalization_spike,
+            "rotation_jump_increase_after_finalize": rotation_jump_increase_after_finalize,
+            "final_rotation_jump_risk": final_rotation_jump_risk,
+            "source_motion_risk": source_motion_risk,
+            "suspected_issue_stage": suspected_issue_stage,
+        },
+    }
+
+
 def resolve_auto_pose_corrections(
     samples: List[Dict[str, np.ndarray]],
     base: PoseCorrectionProfile,
@@ -467,6 +731,7 @@ def convert_video_to_bvh(
     root_yaw_offset_deg: float = 0.0,
     lower_body_rotation_mode: str = "off",
     loop_mode: str = "off",
+    include_source_stage_diagnostics: bool = False,
 ) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]], Dict[str, Any]]:
     fps, frames_pts_raw, detected_samples, scan_stats = collect_detected_pose_samples(
         input_path=input_path,
@@ -485,6 +750,10 @@ def convert_video_to_bvh(
     pose_backend = str(scan_stats.get("pose_backend", "unknown"))
 
     frames_pts, interpolated_frames, carried_frames = fill_pose_gaps(frames_pts_raw, max_gap_interpolate)
+    collect_source_stage_diagnostics = bool(include_source_stage_diagnostics)
+    frames_filled_source: Optional[List[Dict[str, np.ndarray]]] = None
+    if collect_source_stage_diagnostics:
+        frames_filled_source = [_copy_pose_frame(pts) for pts in frames_pts]
     print(
         (
             f"[vid2model] done frames={len(frames_pts_raw)} detected={detected_count} "
@@ -506,10 +775,16 @@ def convert_video_to_bvh(
         )
     reference_basis, reference_origin = _build_reference_basis(reference_sample, corrections)
     frames_pts = [_canonicalize_pose_points(pts, reference_basis, reference_origin) for pts in frames_pts]
+    frames_canonical: Optional[List[Dict[str, np.ndarray]]] = None
+    if collect_source_stage_diagnostics:
+        frames_canonical = [_copy_pose_frame(pts) for pts in frames_pts]
     canonical_anchor_samples = [
         _canonicalize_pose_points(sample, reference_basis, reference_origin) for sample in anchor_samples
     ]
     frames_pts = [_apply_pose_corrections(pts, corrections) for pts in frames_pts]
+    frames_corrected_pre_cleanup: Optional[List[Dict[str, np.ndarray]]] = None
+    if collect_source_stage_diagnostics:
+        frames_corrected_pre_cleanup = [_copy_pose_frame(pts) for pts in frames_pts]
     canonical_anchor_samples = [_apply_pose_corrections(sample, corrections) for sample in canonical_anchor_samples]
     frames_before_cleanup = [_copy_pose_frame(pts) for pts in frames_pts]
     pre_cleanup_loopability: Dict[str, Any] = {}
@@ -536,6 +811,9 @@ def convert_video_to_bvh(
         canonical_anchor_samples,
         use_contact_cleanup=contact_cleanup_enabled,
     )
+    frames_post_cleanup_pre_loop: Optional[List[Dict[str, np.ndarray]]] = None
+    if collect_source_stage_diagnostics:
+        frames_post_cleanup_pre_loop = [_copy_pose_frame(pts) for pts in frames_pts]
     canonical_anchor_samples, _ = cleanup_pose_frames(
         canonical_anchor_samples,
         canonical_anchor_samples,
@@ -616,7 +894,13 @@ def convert_video_to_bvh(
     motion_values = []
     for pts in frames_pts:
         motion_values.append(frame_channels(pts, rest_offsets, ref_root, corrections))
+    motion_values_pre_root_yaw: Optional[List[List[float]]] = None
+    if collect_source_stage_diagnostics:
+        motion_values_pre_root_yaw = [list(frame) for frame in motion_values]
     motion_values, yaw_norm_stats = normalize_motion_root_yaw(motion_values)
+    motion_values_post_root_yaw: Optional[List[List[float]]] = None
+    if collect_source_stage_diagnostics:
+        motion_values_post_root_yaw = [list(frame) for frame in motion_values]
     if yaw_norm_stats["applied"] > 0.5:
         print(
             (
@@ -694,6 +978,31 @@ def convert_video_to_bvh(
             "frame_count": int(len(motion_values)),
         },
     }
+    if (
+        collect_source_stage_diagnostics
+        and frames_filled_source is not None
+        and frames_canonical is not None
+        and frames_corrected_pre_cleanup is not None
+        and frames_post_cleanup_pre_loop is not None
+        and motion_values_pre_root_yaw is not None
+        and motion_values_post_root_yaw is not None
+    ):
+        diagnostics["source_stages"] = {
+            "pose": _build_source_pose_stage_diagnostics(
+                {
+                    "filled_source": frames_filled_source,
+                    "canonical": frames_canonical,
+                    "corrected_pre_cleanup": frames_corrected_pre_cleanup,
+                    "post_cleanup_pre_loop": frames_post_cleanup_pre_loop,
+                    "final_source": frames_pts,
+                }
+            ),
+            "motion": _build_source_motion_stage_diagnostics(
+                motion_values_pre_root_yaw,
+                motion_values_post_root_yaw,
+                motion_values,
+            ),
+        }
     diagnostics["quality"] = _build_quality_summary(
         source_frame_count=len(frames_pts_raw),
         detected_count=detected_count,

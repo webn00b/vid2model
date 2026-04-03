@@ -96,6 +96,54 @@ def rotate_points_about_y(
         pts[key] = pivot + rot @ (value - pivot)
 
 
+def _adaptive_body_bend_reduction(
+    requested_bend: float,
+    pts: Dict[str, np.ndarray],
+    torso_keys: List[str],
+    pivot: np.ndarray,
+    shoulder_span: float,
+) -> float:
+    bend = float(np.clip(requested_bend, 0.0, 1.0))
+    if bend <= 1e-6:
+        return 0.0
+
+    torso_depths = [abs(float(pts[key][2] - pivot[2])) for key in torso_keys if key in pts]
+    if not torso_depths:
+        return bend
+
+    torso_height = float(np.linalg.norm(pts.get("chest", pivot) - pivot))
+    if torso_height < 1e-6:
+        torso_height = shoulder_span
+    if torso_height < 1e-6:
+        return bend
+
+    torso_depth_ratio = max(torso_depths) / torso_height
+    if torso_depth_ratio <= 0.20:
+        return bend
+
+    # Preserve preset-specific bend strength while still relaxing overly
+    # aggressive flattening on expressive forward-bend poses.
+    soften_blend = float(np.clip((torso_depth_ratio - 0.20) / 0.25, 0.0, 1.0))
+    softened_scale = 1.0 - 0.46 * soften_blend
+    if torso_depth_ratio >= 0.35:
+        softened_scale = max(softened_scale, 0.54)
+    return bend * softened_scale
+
+
+def _adaptive_lateral_floor(rel_x: float, base_floor: float) -> float:
+    base_floor = max(float(base_floor), 1e-6)
+    rel_x = float(rel_x)
+
+    # Keep a hard correction when the chain clearly crosses the body midline,
+    # but preserve compact poses that stay on the correct side.
+    if rel_x < (-0.10 * base_floor):
+        return base_floor
+
+    normalized = float(np.clip(max(rel_x, 0.0) / base_floor, 0.0, 1.0))
+    softened_scale = 0.32 + 0.68 * normalized
+    return base_floor * softened_scale
+
+
 def apply_pose_corrections(
     pts: Dict[str, np.ndarray],
     corrections: PoseCorrectionProfile,
@@ -174,7 +222,13 @@ def apply_pose_corrections(
 
     torso_keys = ["spine", "chest", "upper_chest", "neck", "head", "left_shoulder_clavicle", "right_shoulder_clavicle"]
     if corrections.body_bend_reduction_power:
-        bend = float(np.clip(corrections.body_bend_reduction_power, 0.0, 1.0))
+        bend = _adaptive_body_bend_reduction(
+            float(corrections.body_bend_reduction_power),
+            out,
+            torso_keys,
+            mid_hip,
+            shoulder_span,
+        )
         if bend > 1e-6:
             for key in torso_keys:
                 if key not in out:
@@ -370,8 +424,8 @@ def apply_pose_corrections(
                     point[2] = point[2] * (1.0 - blend) + (mid_hip[2] + sign * target_depth) * blend
 
     if corrections.use_arm_ik:
-        arm_floor = shoulder_span * 0.16
-        forearm_floor = shoulder_span * 0.24
+        arm_floor = shoulder_span * 0.08
+        forearm_floor = shoulder_span * 0.10
         for side, sign in (("left", -1.0), ("right", 1.0)):
             for key, floor in [
                 (f"{side}_shoulder_clavicle", arm_floor),
@@ -384,12 +438,13 @@ def apply_pose_corrections(
                 if point is None:
                     continue
                 rel_x = (point[0] - mid_hip[0]) * sign
-                if rel_x < floor:
-                    point[0] = mid_hip[0] + sign * floor
+                target_floor = _adaptive_lateral_floor(rel_x, floor)
+                if rel_x < target_floor:
+                    point[0] = mid_hip[0] + sign * target_floor
 
     if corrections.use_leg_ik:
-        leg_floor = hip_span * 0.16
-        lower_leg_floor = hip_span * 0.12
+        leg_floor = hip_span * 0.10
+        lower_leg_floor = hip_span * 0.07
         for side, sign in (("left", -1.0), ("right", 1.0)):
             for key, floor in [
                 (f"{side}_hip", leg_floor),
@@ -402,8 +457,9 @@ def apply_pose_corrections(
                 if point is None:
                     continue
                 rel_x = (point[0] - mid_hip[0]) * sign
-                if rel_x < floor:
-                    point[0] = mid_hip[0] + sign * floor
+                target_floor = _adaptive_lateral_floor(rel_x, floor)
+                if rel_x < target_floor:
+                    point[0] = mid_hip[0] + sign * target_floor
 
     if corrections.shoulder_tracking and "left_shoulder_clavicle" in out and "right_shoulder_clavicle" in out:
         span = out["right_shoulder_clavicle"] - out["left_shoulder_clavicle"]
