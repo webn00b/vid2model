@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "vid2model",
+  "project_id": "2267c228-4973-4f9f-9747-9929038e9fe9"
+}
