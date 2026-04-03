@@ -11,7 +11,7 @@ from vid2model_lib.auto_pose_trainer import (
     summarize_auto_pose_model,
     train_auto_pose_model,
 )
-from vid2model_lib.pipeline import _predict_auto_label
+from vid2model_lib.pipeline_auto_pose import _predict_auto_label
 
 
 def make_sample(scale: float = 1.0, shift_x: float = 0.0) -> dict[str, np.ndarray]:

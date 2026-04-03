@@ -7,7 +7,8 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 
-from .pipeline import _auto_feature_vector
+from .pipeline_auto_pose import _auto_feature_vector
+from .pipeline_retarget import median_pose_sample
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"}
 
@@ -31,7 +32,7 @@ def build_auto_pose_example(
     if not samples:
         raise ValueError("samples must not be empty")
 
-    features, summary = _auto_feature_vector(samples)
+    features, summary = _auto_feature_vector(samples, median_pose_sample)
     payload_meta = dict(meta or {})
     payload_meta.setdefault("feature_dim", int(features.size))
     return AutoPoseExample(
