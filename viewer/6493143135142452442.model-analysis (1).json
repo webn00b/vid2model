@@ -1,0 +1,2067 @@
+{
+  "format": "vid2model.model-analysis.v1",
+  "generatedAt": "2026-04-03T21:19:18.355Z",
+  "modelLabel": "6493143135142452442.glb",
+  "modelFingerprint": "rig:729cb56b",
+  "skinnedMeshCount": 7,
+  "boneCount": 84,
+  "humanoid": {
+    "rawBones": [
+      "hips",
+      "spine",
+      "chest",
+      "upperChest",
+      "neck",
+      "head",
+      "leftShoulder",
+      "rightShoulder",
+      "leftUpperArm",
+      "rightUpperArm",
+      "leftLowerArm",
+      "rightLowerArm",
+      "leftHand",
+      "rightHand",
+      "leftUpperLeg",
+      "rightUpperLeg",
+      "leftLowerLeg",
+      "rightLowerLeg",
+      "leftFoot",
+      "rightFoot",
+      "leftToes",
+      "rightToes",
+      "leftThumbMetacarpal",
+      "leftThumbProximal",
+      "leftThumbDistal",
+      "leftIndexProximal",
+      "leftIndexIntermediate",
+      "leftIndexDistal",
+      "leftMiddleProximal",
+      "leftMiddleIntermediate",
+      "leftMiddleDistal",
+      "leftRingProximal",
+      "leftRingIntermediate",
+      "leftRingDistal",
+      "leftLittleProximal",
+      "leftLittleIntermediate",
+      "leftLittleDistal",
+      "rightThumbMetacarpal",
+      "rightThumbProximal",
+      "rightThumbDistal",
+      "rightIndexProximal",
+      "rightIndexIntermediate",
+      "rightIndexDistal",
+      "rightMiddleProximal",
+      "rightMiddleIntermediate",
+      "rightMiddleDistal",
+      "rightRingProximal",
+      "rightRingIntermediate",
+      "rightRingDistal",
+      "rightLittleProximal",
+      "rightLittleIntermediate",
+      "rightLittleDistal"
+    ],
+    "normalizedBones": [],
+    "canonicalToTarget": {
+      "head": "head",
+      "hips": "hips",
+      "leftUpperLeg": "leftUpperLeg",
+      "rightUpperLeg": "rightUpperLeg",
+      "spine": "spine",
+      "upperChest": "upperChest",
+      "leftShoulder": "leftShoulder",
+      "leftUpperArm": "leftUpperArm",
+      "chest": "chest",
+      "neck": "neck",
+      "rightShoulder": "rightShoulder",
+      "rightUpperArm": "rightUpperArm",
+      "leftLowerLeg": "leftLowerLeg",
+      "rightLowerLeg": "rightLowerLeg",
+      "rightLowerArm": "rightLowerArm",
+      "leftLowerArm": "leftLowerArm",
+      "leftHand": "leftHand",
+      "rightHand": "rightHand",
+      "leftFoot": "leftFoot",
+      "rightFoot": "rightFoot",
+      "leftToes": "leftToes",
+      "rightToes": "rightToes",
+      "leftThumbMetacarpal": "leftThumbMetacarpal",
+      "leftThumbProximal": "leftThumbProximal",
+      "leftThumbDistal": "leftThumbDistal",
+      "leftIndexProximal": "leftIndexProximal",
+      "rightLittleDistal": "rightLittleDistal",
+      "rightLittleIntermediate": "rightLittleIntermediate",
+      "rightLittleProximal": "rightLittleProximal",
+      "rightRingProximal": "rightRingProximal",
+      "rightMiddleProximal": "rightMiddleProximal",
+      "leftMiddleProximal": "leftMiddleProximal",
+      "leftRingProximal": "leftRingProximal",
+      "leftIndexDistal": "leftIndexDistal",
+      "rightMiddleIntermediate": "rightMiddleIntermediate",
+      "rightMiddleDistal": "rightMiddleDistal",
+      "rightThumbDistal": "rightThumbDistal",
+      "leftMiddleIntermediate": "leftMiddleIntermediate",
+      "leftMiddleDistal": "leftMiddleDistal",
+      "leftLittleProximal": "leftLittleProximal",
+      "leftLittleIntermediate": "leftLittleIntermediate",
+      "leftLittleDistal": "leftLittleDistal",
+      "rightIndexDistal": "rightIndexDistal",
+      "rightThumbMetacarpal": "rightThumbMetacarpal",
+      "leftIndexIntermediate": "leftIndexIntermediate",
+      "rightThumbProximal": "rightThumbProximal",
+      "rightIndexProximal": "rightIndexProximal",
+      "leftRingDistal": "leftRingDistal",
+      "rightRingDistal": "rightRingDistal",
+      "leftRingIntermediate": "leftRingIntermediate",
+      "rightIndexIntermediate": "rightIndexIntermediate",
+      "rightRingIntermediate": "rightRingIntermediate"
+    }
+  },
+  "root": {
+    "name": "Root",
+    "bindQuaternionLocal": [
+      0,
+      0,
+      0,
+      1
+    ]
+  },
+  "hips": {
+    "name": "hips",
+    "bindPositionLocal": [
+      0.00005,
+      -0.024057,
+      -0.000667
+    ],
+    "bindQuaternionLocal": [
+      0,
+      0.998429,
+      0,
+      -0.05603
+    ],
+    "primaryChildDirLocal": [
+      0,
+      1,
+      0
+    ]
+  },
+  "footHints": {
+    "left": {
+      "forwardLocal": [
+        0,
+        0,
+        1
+      ],
+      "hasToesBone": true
+    },
+    "right": {
+      "forwardLocal": [
+        0,
+        0,
+        1
+      ],
+      "hasToesBone": true
+    }
+  },
+  "segmentLengths": {
+    "spine": 0.285839,
+    "chest": 0.285837,
+    "upperChest": 0.195874,
+    "neck": 0.151936,
+    "head": 0.111886,
+    "leftUpperArm": 0.107784,
+    "leftLowerArm": 0.569354,
+    "leftHand": 0.269286,
+    "rightUpperArm": 0.121383,
+    "rightLowerArm": 0.303007,
+    "rightHand": 0.228622,
+    "leftUpperLeg": 0.12892,
+    "leftLowerLeg": 0.346749,
+    "leftFoot": 0.392665,
+    "leftToes": 0.172015,
+    "rightUpperLeg": 0.128273,
+    "rightLowerLeg": 0.268313,
+    "rightFoot": 0.308543,
+    "rightToes": 0.252918
+  },
+  "proportions": {
+    "torso": 1.031372,
+    "leftArm": 0.946424,
+    "rightArm": 0.653012,
+    "leftLeg": 1.040349,
+    "rightLeg": 0.958047,
+    "armToTorso": 0.775392,
+    "legToTorso": 0.968805,
+    "leftRightArmRatio": 1.449321,
+    "leftRightLegRatio": 1.085906
+  },
+  "bones": [
+    {
+      "name": "head",
+      "canonical": "head",
+      "parent": "neck",
+      "depth": 8,
+      "childCount": 10,
+      "bindPositionLocal": [
+        0,
+        0.069641,
+        -0.00874
+      ],
+      "bindQuaternionLocal": [
+        -0.087807,
+        0.717674,
+        -0.036562,
+        0.689853
+      ],
+      "primaryChildDirLocal": [
+        -0.405505,
+        0.824284,
+        0.395123
+      ]
+    },
+    {
+      "name": "J_Adj_L_FaceEye",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 0,
+      "bindPositionLocal": [
+        -0.015026,
+        0.058935,
+        -0.022658
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "J_Adj_R_FaceEye",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 0,
+      "bindPositionLocal": [
+        0.015026,
+        0.058935,
+        -0.022658
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "hips",
+      "canonical": "hips",
+      "parent": "Root",
+      "depth": 3,
+      "childCount": 3,
+      "bindPositionLocal": [
+        0,
+        0.879429,
+        -0.004328
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0.998429,
+        0,
+        -0.05603
+      ],
+      "primaryChildDirLocal": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "name": "leftUpperLeg",
+      "canonical": "leftUpperLeg",
+      "parent": "hips",
+      "depth": 4,
+      "childCount": 4,
+      "bindPositionLocal": [
+        -0.068409,
+        -0.035508,
+        0.003264
+      ],
+      "bindQuaternionLocal": [
+        -0.035884,
+        -0.057359,
+        -0.04802,
+        0.996552
+      ],
+      "primaryChildDirLocal": [
+        0,
+        -1,
+        0
+      ]
+    },
+    {
+      "name": "rightUpperLeg",
+      "canonical": "rightUpperLeg",
+      "parent": "hips",
+      "depth": 4,
+      "childCount": 4,
+      "bindPositionLocal": [
+        0.068409,
+        -0.035508,
+        0.003264
+      ],
+      "bindQuaternionLocal": [
+        -0.251676,
+        -0.068257,
+        0.031491,
+        0.964888
+      ],
+      "primaryChildDirLocal": [
+        0,
+        -1,
+        0
+      ]
+    },
+    {
+      "name": "spine",
+      "canonical": "spine",
+      "parent": "hips",
+      "depth": 4,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0,
+        0.0503,
+        -0.011657
+      ],
+      "bindQuaternionLocal": [
+        -0.007993,
+        0.686951,
+        -0.003787,
+        0.72665
+      ],
+      "primaryChildDirLocal": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "name": "upperChest",
+      "canonical": "upperChest",
+      "parent": "chest",
+      "depth": 6,
+      "childCount": 5,
+      "bindPositionLocal": [
+        0,
+        0.097818,
+        0.013286
+      ],
+      "bindQuaternionLocal": [
+        -0.084005,
+        -0.001916,
+        -0.041274,
+        0.995608
+      ],
+      "primaryChildDirLocal": [
+        0.693854,
+        -0.683364,
+        0.227113
+      ]
+    },
+    {
+      "name": "leftShoulder",
+      "canonical": "leftShoulder",
+      "parent": "upperChest",
+      "depth": 7,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.019856,
+        0.09435,
+        0.026754
+      ],
+      "bindQuaternionLocal": [
+        0.058852,
+        -0.012441,
+        0.019726,
+        0.997994
+      ],
+      "primaryChildDirLocal": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "leftUpperArm",
+      "canonical": "leftUpperArm",
+      "parent": "leftShoulder",
+      "depth": 8,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.061071,
+        -0.00875,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0.042903,
+        -0.177289,
+        0.428084,
+        0.885139
+      ],
+      "primaryChildDirLocal": [
+        -0.607681,
+        -0.793244,
+        0.038586
+      ]
+    },
+    {
+      "name": "chest",
+      "canonical": "chest",
+      "parent": "spine",
+      "depth": 5,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0,
+        0.10299,
+        -0.003044
+      ],
+      "bindQuaternionLocal": [
+        -0.065212,
+        -0.000867,
+        -0.034346,
+        0.99728
+      ],
+      "primaryChildDirLocal": [
+        0.048172,
+        0.996715,
+        0.06511
+      ]
+    },
+    {
+      "name": "neck",
+      "canonical": "neck",
+      "parent": "upperChest",
+      "depth": 7,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0,
+        0.118098,
+        0.034242
+      ],
+      "bindQuaternionLocal": [
+        0.108416,
+        0.00455,
+        0.046525,
+        0.993006
+      ],
+      "primaryChildDirLocal": [
+        0.116797,
+        0.958628,
+        -0.259598
+      ]
+    },
+    {
+      "name": "rightShoulder",
+      "canonical": "rightShoulder",
+      "parent": "upperChest",
+      "depth": 7,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.019856,
+        0.09435,
+        0.026754
+      ],
+      "bindQuaternionLocal": [
+        0.118795,
+        0.019526,
+        0.062045,
+        0.990786
+      ],
+      "primaryChildDirLocal": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "rightUpperArm",
+      "canonical": "rightUpperArm",
+      "parent": "rightShoulder",
+      "depth": 8,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.061071,
+        -0.00875,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0.030249,
+        0.146461,
+        -0.369475,
+        0.917127
+      ],
+      "primaryChildDirLocal": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "leftLowerLeg",
+      "canonical": "leftLowerLeg",
+      "parent": "leftUpperLeg",
+      "depth": 5,
+      "childCount": 4,
+      "bindPositionLocal": [
+        0,
+        -0.343082,
+        0.00718
+      ],
+      "bindQuaternionLocal": [
+        0.223317,
+        0.004976,
+        0.032792,
+        0.974181
+      ],
+      "primaryChildDirLocal": [
+        0,
+        -1,
+        0
+      ]
+    },
+    {
+      "name": "J_Sec_R_Bust1",
+      "canonical": "",
+      "parent": "upperChest",
+      "depth": 7,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.045559,
+        -0.006478,
+        -0.061581
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.428191,
+        0.281027,
+        -0.858881
+      ]
+    },
+    {
+      "name": "rightLowerLeg",
+      "canonical": "rightLowerLeg",
+      "parent": "rightUpperLeg",
+      "depth": 5,
+      "childCount": 4,
+      "bindPositionLocal": [
+        0,
+        -0.343082,
+        0.00718
+      ],
+      "bindQuaternionLocal": [
+        0.25063,
+        -0.007302,
+        0.02905,
+        0.967619
+      ],
+      "primaryChildDirLocal": [
+        0,
+        -1,
+        0
+      ]
+    },
+    {
+      "name": "rightLowerArm",
+      "canonical": "rightLowerArm",
+      "parent": "rightUpperArm",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.245305,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        -0.005215,
+        -0.239903,
+        0.538059,
+        0.80803
+      ],
+      "primaryChildDirLocal": [
+        -0.6817,
+        0.395244,
+        -0.615685
+      ]
+    },
+    {
+      "name": "leftLowerArm",
+      "canonical": "leftLowerArm",
+      "parent": "leftUpperArm",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.245305,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0.11916,
+        0.223781,
+        -0.537309,
+        0.804377
+      ],
+      "primaryChildDirLocal": [
+        0.443971,
+        0.450739,
+        -0.774418
+      ]
+    },
+    {
+      "name": "J_Sec_L_Bust1",
+      "canonical": "",
+      "parent": "upperChest",
+      "depth": 7,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.045559,
+        -0.006478,
+        -0.061581
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.428191,
+        0.281027,
+        -0.858881
+      ]
+    },
+    {
+      "name": "J_Sec_R_Bust2",
+      "canonical": "",
+      "parent": "J_Sec_R_Bust1",
+      "depth": 8,
+      "childCount": 0,
+      "bindPositionLocal": [
+        0.017869,
+        0.011727,
+        -0.035841
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "J_Sec_L_Bust2",
+      "canonical": "",
+      "parent": "J_Sec_L_Bust1",
+      "depth": 8,
+      "childCount": 0,
+      "bindPositionLocal": [
+        -0.017869,
+        0.011727,
+        -0.035841
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "leftHand",
+      "canonical": "leftHand",
+      "parent": "leftLowerArm",
+      "depth": 10,
+      "childCount": 5,
+      "bindPositionLocal": [
+        -0.219359,
+        0,
+        -0.000385
+      ],
+      "bindQuaternionLocal": [
+        -0.006509,
+        0.002822,
+        -0.028395,
+        0.999572
+      ],
+      "primaryChildDirLocal": [
+        -0.951633,
+        0.107994,
+        -0.287631
+      ]
+    },
+    {
+      "name": "rightHand",
+      "canonical": "rightHand",
+      "parent": "rightLowerArm",
+      "depth": 10,
+      "childCount": 5,
+      "bindPositionLocal": [
+        0.219359,
+        0,
+        -0.000385
+      ],
+      "bindQuaternionLocal": [
+        -0.003117,
+        -0.010589,
+        -0.002577,
+        0.999936
+      ],
+      "primaryChildDirLocal": [
+        0.951633,
+        0.107994,
+        -0.287631
+      ]
+    },
+    {
+      "name": "leftFoot",
+      "canonical": "leftFoot",
+      "parent": "leftLowerLeg",
+      "depth": 6,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.000075,
+        -0.385327,
+        0.023267
+      ],
+      "bindQuaternionLocal": [
+        -0.029279,
+        0.037022,
+        0.099982,
+        0.993869
+      ],
+      "primaryChildDirLocal": [
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "name": "rightFoot",
+      "canonical": "rightFoot",
+      "parent": "rightLowerLeg",
+      "depth": 6,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.000075,
+        -0.385327,
+        0.023267
+      ],
+      "bindQuaternionLocal": [
+        0.032446,
+        0.126267,
+        0.944963,
+        0.300082
+      ],
+      "primaryChildDirLocal": [
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "name": "leftToes",
+      "canonical": "leftToes",
+      "parent": "leftFoot",
+      "depth": 7,
+      "childCount": 0,
+      "bindPositionLocal": [
+        0,
+        -0.060237,
+        -0.105743
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "rightToes",
+      "canonical": "rightToes",
+      "parent": "rightFoot",
+      "depth": 7,
+      "childCount": 0,
+      "bindPositionLocal": [
+        0,
+        -0.060237,
+        -0.105743
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "leftThumbMetacarpal",
+      "canonical": "leftThumbMetacarpal",
+      "parent": "leftHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.002951,
+        -0.008439,
+        -0.013461
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.756916,
+        -0.044439,
+        -0.651999
+      ]
+    },
+    {
+      "name": "leftThumbProximal",
+      "canonical": "leftThumbProximal",
+      "parent": "leftThumbMetacarpal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.029625,
+        -0.001739,
+        -0.025518
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.785142,
+        -0.033989,
+        -0.618383
+      ]
+    },
+    {
+      "name": "leftThumbDistal",
+      "canonical": "leftThumbDistal",
+      "parent": "leftThumbProximal",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        -0.018896,
+        -0.000818,
+        -0.014883
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "leftIndexProximal",
+      "canonical": "leftIndexProximal",
+      "parent": "leftHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.054839,
+        0.006223,
+        -0.016575
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.999809,
+        0,
+        0.019558
+      ]
+    },
+    {
+      "name": "rightLittleDistal",
+      "canonical": "rightLittleDistal",
+      "parent": "rightLittleIntermediate",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        0.015176,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "rightLittleIntermediate",
+      "canonical": "rightLittleIntermediate",
+      "parent": "rightLittleProximal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.026332,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "rightLittleProximal",
+      "canonical": "rightLittleProximal",
+      "parent": "rightHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.051169,
+        0.006223,
+        0.024602
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "rightRingProximal",
+      "canonical": "rightRingProximal",
+      "parent": "rightHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.054953,
+        0.006223,
+        0.011458
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "rightMiddleProximal",
+      "canonical": "rightMiddleProximal",
+      "parent": "rightHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.055586,
+        0.006223,
+        -0.001726
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "leftMiddleProximal",
+      "canonical": "leftMiddleProximal",
+      "parent": "leftHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.055586,
+        0.006223,
+        -0.001726
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "leftRingProximal",
+      "canonical": "leftRingProximal",
+      "parent": "leftHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.054953,
+        0.006223,
+        0.011458
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "leftIndexDistal",
+      "canonical": "leftIndexDistal",
+      "parent": "leftIndexIntermediate",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        -0.017134,
+        -0.000499,
+        0.000665
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "rightMiddleIntermediate",
+      "canonical": "rightMiddleIntermediate",
+      "parent": "rightMiddleProximal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.031034,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "rightMiddleDistal",
+      "canonical": "rightMiddleDistal",
+      "parent": "rightMiddleIntermediate",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        0.019146,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "rightThumbDistal",
+      "canonical": "rightThumbDistal",
+      "parent": "rightThumbProximal",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        0.018896,
+        -0.000818,
+        -0.014883
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "leftMiddleIntermediate",
+      "canonical": "leftMiddleIntermediate",
+      "parent": "leftMiddleProximal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.031034,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "leftMiddleDistal",
+      "canonical": "leftMiddleDistal",
+      "parent": "leftMiddleIntermediate",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        -0.019146,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "leftLittleProximal",
+      "canonical": "leftLittleProximal",
+      "parent": "leftHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.051169,
+        0.006223,
+        0.024602
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "leftLittleIntermediate",
+      "canonical": "leftLittleIntermediate",
+      "parent": "leftLittleProximal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.026332,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "leftLittleDistal",
+      "canonical": "leftLittleDistal",
+      "parent": "leftLittleIntermediate",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        -0.015176,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "rightIndexDistal",
+      "canonical": "rightIndexDistal",
+      "parent": "rightIndexIntermediate",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        0.017134,
+        -0.000499,
+        0.000665
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "rightThumbMetacarpal",
+      "canonical": "rightThumbMetacarpal",
+      "parent": "rightHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.002951,
+        -0.008439,
+        -0.013461
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.756916,
+        -0.044439,
+        -0.651999
+      ]
+    },
+    {
+      "name": "leftIndexIntermediate",
+      "canonical": "leftIndexIntermediate",
+      "parent": "leftIndexProximal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.027856,
+        0,
+        0.000545
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.998825,
+        -0.029076,
+        0.038784
+      ]
+    },
+    {
+      "name": "rightThumbProximal",
+      "canonical": "rightThumbProximal",
+      "parent": "rightThumbMetacarpal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.029625,
+        -0.001739,
+        -0.025518
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.785142,
+        -0.033989,
+        -0.618383
+      ]
+    },
+    {
+      "name": "rightIndexProximal",
+      "canonical": "rightIndexProximal",
+      "parent": "rightHand",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.054839,
+        0.006223,
+        -0.016575
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.999809,
+        0,
+        0.019558
+      ]
+    },
+    {
+      "name": "leftRingDistal",
+      "canonical": "leftRingDistal",
+      "parent": "leftRingIntermediate",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        -0.016614,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "rightRingDistal",
+      "canonical": "rightRingDistal",
+      "parent": "rightRingIntermediate",
+      "depth": 13,
+      "childCount": 0,
+      "bindPositionLocal": [
+        0.016614,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": null
+    },
+    {
+      "name": "leftRingIntermediate",
+      "canonical": "leftRingIntermediate",
+      "parent": "leftRingProximal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.028788,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "rightIndexIntermediate",
+      "canonical": "rightIndexIntermediate",
+      "parent": "rightIndexProximal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.027856,
+        0,
+        0.000545
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.998825,
+        -0.029076,
+        0.038784
+      ]
+    },
+    {
+      "name": "rightRingIntermediate",
+      "canonical": "rightRingIntermediate",
+      "parent": "rightRingProximal",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.028788,
+        0,
+        0
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "J_Sec_R_SkirtFront_01",
+      "canonical": "",
+      "parent": "rightUpperLeg",
+      "depth": 5,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.007095,
+        -0.054175,
+        -0.103983
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.074635,
+        -0.997184,
+        0.007316
+      ]
+    },
+    {
+      "name": "J_Sec_L_SkirtFront_01",
+      "canonical": "",
+      "parent": "leftUpperLeg",
+      "depth": 5,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.006912,
+        -0.054154,
+        -0.103914
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.077003,
+        -0.996997,
+        0.008209
+      ]
+    },
+    {
+      "name": "J_Sec_L_SkirtSide_01",
+      "canonical": "",
+      "parent": "leftUpperLeg",
+      "depth": 5,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.083666,
+        -0.037479,
+        -0.002954
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.235128,
+        -0.96653,
+        0.102637
+      ]
+    },
+    {
+      "name": "J_Sec_L_SkirtBack_01",
+      "canonical": "",
+      "parent": "leftUpperLeg",
+      "depth": 5,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.001721,
+        -0.037902,
+        0.099287
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.085453,
+        -0.98563,
+        0.145711
+      ]
+    },
+    {
+      "name": "J_Sec_R_SkirtBack_01",
+      "canonical": "",
+      "parent": "rightUpperLeg",
+      "depth": 5,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.001721,
+        -0.037902,
+        0.099287
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.065534,
+        -0.986608,
+        0.149364
+      ]
+    },
+    {
+      "name": "J_Sec_R_SkirtSide_01",
+      "canonical": "",
+      "parent": "rightUpperLeg",
+      "depth": 5,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.083666,
+        -0.037479,
+        -0.002954
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.235125,
+        -0.966531,
+        0.102638
+      ]
+    },
+    {
+      "name": "J_Sec_Hair1_02",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.062196,
+        0.093925,
+        -0.087081
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.070638,
+        -0.997484,
+        -0.005922
+      ]
+    },
+    {
+      "name": "J_Sec_Hair2_02",
+      "canonical": "",
+      "parent": "J_Sec_Hair1_02",
+      "depth": 10,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.004358,
+        -0.06154,
+        -0.000365
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.107443,
+        -0.993464,
+        0.038543
+      ]
+    },
+    {
+      "name": "J_Sec_Hair1_03",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.071757,
+        0.090562,
+        -0.077892
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.14182,
+        -0.989454,
+        -0.02945
+      ]
+    },
+    {
+      "name": "J_Sec_Hair2_03",
+      "canonical": "",
+      "parent": "J_Sec_Hair1_03",
+      "depth": 10,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.00888,
+        -0.061955,
+        -0.001844
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.206718,
+        -0.978039,
+        0.026611
+      ]
+    },
+    {
+      "name": "J_Sec_Hair1_01",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.001708,
+        0.11556,
+        -0.100182
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.01784,
+        -0.991112,
+        -0.131826
+      ]
+    },
+    {
+      "name": "J_Sec_Hair1_04",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.105945,
+        0.077459,
+        0.115427
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.429059,
+        -0.829587,
+        0.357343
+      ]
+    },
+    {
+      "name": "J_Sec_Hair2_04",
+      "canonical": "",
+      "parent": "J_Sec_Hair1_04",
+      "depth": 10,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.031405,
+        -0.060721,
+        0.026156
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.544251,
+        -0.60641,
+        0.579706
+      ]
+    },
+    {
+      "name": "J_Sec_Hair3_04",
+      "canonical": "",
+      "parent": "J_Sec_Hair2_04",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.040019,
+        -0.04459,
+        0.042626
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.036285,
+        -0.979939,
+        0.195969
+      ]
+    },
+    {
+      "name": "J_Sec_Hair1_05",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.026175,
+        0.003948,
+        0.128813
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.041131,
+        -0.973478,
+        0.225053
+      ]
+    },
+    {
+      "name": "J_Sec_Hair2_05",
+      "canonical": "",
+      "parent": "J_Sec_Hair1_05",
+      "depth": 10,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.004733,
+        -0.112016,
+        0.025896
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.017301,
+        -0.974687,
+        0.222902
+      ]
+    },
+    {
+      "name": "J_Sec_Hair4_05",
+      "canonical": "",
+      "parent": "J_Sec_Hair3_05",
+      "depth": 12,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.002353,
+        -0.112258,
+        0.02523
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.04289,
+        -0.975251,
+        0.2169
+      ]
+    },
+    {
+      "name": "J_Sec_Hair5_05",
+      "canonical": "",
+      "parent": "J_Sec_Hair4_05",
+      "depth": 13,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.004935,
+        -0.112218,
+        0.024958
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.042681,
+        -0.975255,
+        0.216922
+      ]
+    },
+    {
+      "name": "J_Sec_Hair3_05",
+      "canonical": "",
+      "parent": "J_Sec_Hair2_05",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.001991,
+        -0.112171,
+        0.025652
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.020449,
+        -0.975459,
+        0.219231
+      ]
+    },
+    {
+      "name": "J_Sec_Hair1_06",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.105223,
+        0.085137,
+        0.114511
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.386407,
+        -0.858477,
+        0.337204
+      ]
+    },
+    {
+      "name": "J_Sec_Hair2_06",
+      "canonical": "",
+      "parent": "J_Sec_Hair1_06",
+      "depth": 10,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.029177,
+        -0.064821,
+        0.025461
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.567416,
+        -0.597771,
+        0.566311
+      ]
+    },
+    {
+      "name": "J_Sec_Hair3_06",
+      "canonical": "",
+      "parent": "J_Sec_Hair2_06",
+      "depth": 11,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.042498,
+        -0.044772,
+        0.042416
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.018679,
+        -0.974505,
+        0.223588
+      ]
+    },
+    {
+      "name": "J_Sec_Hair1_07",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.087776,
+        0.178426,
+        0.085529
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.240817,
+        0.725449,
+        0.644772
+      ]
+    },
+    {
+      "name": "J_Sec_Hair2_07",
+      "canonical": "",
+      "parent": "J_Sec_Hair1_07",
+      "depth": 10,
+      "childCount": 1,
+      "bindPositionLocal": [
+        -0.007766,
+        0.023394,
+        0.020793
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        -0.093729,
+        0.711903,
+        0.695995
+      ]
+    },
+    {
+      "name": "J_Sec_Hair1_08",
+      "canonical": "",
+      "parent": "head",
+      "depth": 9,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.082264,
+        0.175907,
+        0.082189
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.288972,
+        0.704664,
+        0.648031
+      ]
+    },
+    {
+      "name": "J_Sec_Hair2_08",
+      "canonical": "",
+      "parent": "J_Sec_Hair1_08",
+      "depth": 10,
+      "childCount": 1,
+      "bindPositionLocal": [
+        0.009843,
+        0.024003,
+        0.022074
+      ],
+      "bindQuaternionLocal": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "primaryChildDirLocal": [
+        0.191066,
+        0.725046,
+        0.661666
+      ]
+    }
+  ]
+}
