@@ -61,6 +61,33 @@
       resolvedTrackCountAcrossMeshes,
       resolvedTrackCountForTarget,
     } from "./modules/retarget-helpers.js";
+    import {
+      createViewerChainDiagnostics,
+      getPreferredChildBone as getPreferredChildBoneModule,
+      getPrimaryChildBone as getPrimaryChildBoneModule,
+    } from "./modules/viewer-chain-diagnostics.js";
+    import { createViewerBoneLabels } from "./modules/viewer-bone-labels.js";
+    import { createViewerAlignmentTools } from "./modules/viewer-alignment.js";
+    import { createViewerRuntimeDiagnostics } from "./modules/viewer-runtime-diagnostics.js";
+    import { createViewerSourceAxesDebug } from "./modules/viewer-source-axes-debug.js";
+    import {
+      applyVrmHumanoidBoneNames,
+      createViewerModelLoader,
+      findSkinnedMeshes,
+      logModelBones,
+    } from "./modules/viewer-model-loader.js";
+    import { createViewerParsedModelApplier } from "./modules/viewer-parsed-model.js";
+    import {
+      collectRetargetAttempts,
+      selectRetargetAttempt,
+    } from "./modules/viewer-retarget-attempts.js";
+    import { createViewerSourceOverlay } from "./modules/viewer-source-overlay.js";
+    import { createViewerSkeletonProfileTools } from "./modules/viewer-skeleton-profile.js";
+    import { createViewerSkeletonDebugTools } from "./modules/viewer-skeleton-debug.js";
+    import {
+      autoNameTargetBones,
+      maybeApplyTopologyFallback,
+    } from "./modules/viewer-topology-fallback.js";
     import { setupViewerUi } from "./modules/ui-controls.js";
 
     const wrap = document.getElementById("canvas-wrap");
@@ -130,17 +157,6 @@
     let bodyLengthCalibration = null;
     let armLengthCalibration = null;
     let fingerLengthCalibration = null;
-    let sourceOverlay = null;
-    let sourceAxesDebug = null;
-    let restCorrectionLog = [];
-    let legChainDiagLog = [];
-    let armChainDiagLog = [];
-    let torsoChainDiagLog = [];
-    let footChainDiagLog = [];
-    let boneLabelDebug = {
-      source: null,
-      target: null,
-    };
     let isPlaying = false;
     let isScrubbing = false;
     const loader = new BVHLoader();
@@ -150,11 +166,6 @@
     const { diag } = createDiag(window);
     const SKELETON_COLOR = 0xff2d55;
     const SOURCE_POINT_COLOR = 0xfff400;
-    const _overlayV1 = new THREE.Vector3();
-    const _overlayV2 = new THREE.Vector3();
-    const _overlayV3 = new THREE.Vector3();
-    const _overlayV4 = new THREE.Vector3();
-    const _overlayV5 = new THREE.Vector3();
     const _tmpWorldPosA = new THREE.Vector3();
     const _tmpWorldPosB = new THREE.Vector3();
     const _tmpWorldDelta = new THREE.Vector3();
@@ -172,13 +183,6 @@
     const _calibM1 = new THREE.Matrix4();
     const _overlayPivot = new THREE.Vector3();
     const _overlayUpAxis = new THREE.Vector3(0, 1, 0);
-    const _sourceAxisOrigin = new THREE.Vector3();
-    const _sourceAxisHead = new THREE.Vector3();
-    const _sourceAxisLeft = new THREE.Vector3();
-    const _sourceAxisRight = new THREE.Vector3();
-    const _sourceAxisForward = new THREE.Vector3();
-    const _sourceAxisSide = new THREE.Vector3();
-    const _sourceAxisUp = new THREE.Vector3();
 
     function shortErr(err, limit = 120) {
       const text = String(err?.message || err || "");
@@ -239,33 +243,6 @@
       "rightLittleIntermediate",
       "rightLittleDistal",
     ];
-
-    function applyVrmHumanoidBoneNames(vrm) {
-      const humanoid = vrm?.humanoid || null;
-      if (!humanoid) return { applied: 0, renamed: 0, bones: [], normalizedBones: [] };
-      let applied = 0;
-      let renamed = 0;
-      const bones = [];
-      const normalizedBones = [];
-      for (const boneName of VRM_HUMANOID_BONE_NAMES) {
-        const bone = humanoid.getRawBoneNode?.(boneName) || null;
-        const normalizedBone = humanoid.getNormalizedBoneNode?.(boneName) || null;
-        if (!bone?.isBone) continue;
-        applied += 1;
-        bones.push(bone);
-        if (normalizedBone?.isBone) {
-          normalizedBone.userData.__vrmHumanoidName = boneName;
-          normalizedBones.push(normalizedBone);
-        }
-        bone.userData.__vrmHumanoidName = boneName;
-        bone.userData.__originalBoneName = bone.userData.__originalBoneName || bone.name;
-        if (bone.name !== boneName) {
-          bone.name = boneName;
-          renamed += 1;
-        }
-      }
-      return { applied, renamed, bones, normalizedBones };
-    }
 
     function augmentRetargetTargetBonesWithFallback(baseBones, fallbackBones, stage) {
       const result = [];
@@ -765,1228 +742,172 @@
       return String(window.__vid2modelDiagMode || "minimal").trim().toLowerCase() === "verbose";
     }
 
-    function resetRestCorrectionLog() {
-      restCorrectionLog = [];
-      window.__vid2modelRestCorrections = restCorrectionLog;
-    }
+    const chainDiagnostics = createViewerChainDiagnostics({
+      canonicalBoneKey,
+      buildCanonicalBoneMap,
+      isVerboseDiagMode,
+    });
 
-    function resetLegChainDiagLog() {
-      legChainDiagLog = [];
-      window.__vid2modelLegChainDiag = legChainDiagLog;
-    }
-
-    function resetArmChainDiagLog() {
-      armChainDiagLog = [];
-      window.__vid2modelArmChainDiag = armChainDiagLog;
-    }
-
-    function resetTorsoChainDiagLog() {
-      torsoChainDiagLog = [];
-      window.__vid2modelTorsoChainDiag = torsoChainDiagLog;
-    }
-
-    function resetFootChainDiagLog() {
-      footChainDiagLog = [];
-      window.__vid2modelFootChainDiag = footChainDiagLog;
-    }
-
-    function recordRestCorrectionLog(entry) {
-      if (!entry?.canonical) return;
-      const key = `${entry.canonical}|${entry.target || ""}|${entry.source || ""}`;
-      if (restCorrectionLog.some((row) => `${row.canonical}|${row.target || ""}|${row.source || ""}` === key)) {
-        return;
-      }
-      restCorrectionLog.push(entry);
-      window.__vid2modelRestCorrections = restCorrectionLog;
-    }
-
-    function dumpRestCorrectionLog(reason = "retarget") {
-      const rows = Array.isArray(restCorrectionLog) ? restCorrectionLog.slice() : [];
-      window.__vid2modelRestCorrections = rows;
-      if (!rows.length) return;
-      const suspicious = rows.filter((row) => (row.finalAngleDeg || 0) >= 90 || (row.autoAngleDeg || 0) >= 90);
-      if (!isVerboseDiagMode() && !suspicious.length) return;
-      console.log("[vid2model/diag] rest-corrections", {
-        reason,
-        total: rows.length,
-        suspicious: suspicious.length,
-      });
-      if (isVerboseDiagMode()) {
-        console.table(rows);
-      } else if (suspicious.length >= 6) {
-        console.table(suspicious);
-      }
-    }
-
-    function toRoundedVec3(vec) {
-      if (!vec || !Number.isFinite(vec.x) || !Number.isFinite(vec.y) || !Number.isFinite(vec.z)) return null;
-      return {
-        x: Number(vec.x.toFixed(4)),
-        y: Number(vec.y.toFixed(4)),
-        z: Number(vec.z.toFixed(4)),
-      };
-    }
-
-    function angleBetweenWorldSegments(aStart, aEnd, bStart, bEnd) {
-      if (!aStart || !aEnd || !bStart || !bEnd) return null;
-      const a = new THREE.Vector3().subVectors(aEnd, aStart);
-      const b = new THREE.Vector3().subVectors(bEnd, bStart);
-      const aLen = a.length();
-      const bLen = b.length();
-      if (!(aLen > 1e-6) || !(bLen > 1e-6)) return null;
-      a.multiplyScalar(1 / aLen);
-      b.multiplyScalar(1 / bLen);
-      return Number(THREE.MathUtils.radToDeg(a.angleTo(b)).toFixed(3));
-    }
-
-    function computeBendNormal(startPos, midPos, endPos) {
-      if (!startPos || !midPos || !endPos) return null;
-      const a = new THREE.Vector3().subVectors(midPos, startPos);
-      const b = new THREE.Vector3().subVectors(endPos, midPos);
-      const aLen = a.length();
-      const bLen = b.length();
-      if (!(aLen > 1e-6) || !(bLen > 1e-6)) return null;
-      a.multiplyScalar(1 / aLen);
-      b.multiplyScalar(1 / bLen);
-      const normal = new THREE.Vector3().crossVectors(a, b);
-      if (normal.lengthSq() < 1e-10) return null;
-      return normal.normalize();
-    }
+    const {
+      resetRestCorrectionLog,
+      resetLegChainDiagLog,
+      resetArmChainDiagLog,
+      resetTorsoChainDiagLog,
+      resetFootChainDiagLog,
+      recordRestCorrectionLog,
+      dumpRestCorrectionLog,
+      buildLegChainDiagnostics,
+      dumpLegChainDiagLog,
+      buildArmChainDiagnostics,
+      dumpArmChainDiagLog,
+      buildTorsoChainDiagnostics,
+      dumpTorsoChainDiagLog,
+      buildFootChainDiagnostics,
+      dumpFootChainDiagLog,
+      dumpFootCorrectionDebug,
+    } = chainDiagnostics;
 
     function getPreferredChildBone(bone) {
-      if (!bone?.isBone) return null;
-      const canonical = canonicalBoneKey(bone.name) || "";
-      const children = (bone.children || []).filter((child) => child?.isBone);
-      if (!children.length) return null;
-
-      if (canonical === "leftHand" || canonical === "rightHand") {
-        const preferredFingerRoots = [
-          canonical.replace("Hand", "MiddleProximal"),
-          canonical.replace("Hand", "IndexProximal"),
-          canonical.replace("Hand", "RingProximal"),
-          canonical.replace("Hand", "LittleProximal"),
-          canonical.replace("Hand", "ThumbMetacarpal"),
-          canonical.replace("Hand", "ThumbProximal"),
-        ];
-        for (const preferred of preferredFingerRoots) {
-          const match = children.find((child) => (canonicalBoneKey(child.name) || "") === preferred);
-          if (match) return match;
-        }
-      }
-
-      if (canonical === "leftFoot" || canonical === "rightFoot") {
-        const preferredToes = canonical.replace("Foot", "Toes");
-        const match = children.find((child) => (canonicalBoneKey(child.name) || "") === preferredToes);
-        if (match) return match;
-      }
-
-      return null;
+      return getPreferredChildBoneModule(bone, canonicalBoneKey);
     }
 
     function getPrimaryChildBone(bone) {
-      if (!bone?.isBone) return null;
-      const preferred = getPreferredChildBone(bone);
-      if (preferred) return preferred;
-      bone.getWorldPosition(_tmpWorldPosA);
-      let bestChild = null;
-      let bestLenSq = 0;
-      for (const child of bone.children || []) {
-        if (!child?.isBone) continue;
-        child.getWorldPosition(_tmpWorldPosB);
-        const lenSq = _tmpWorldPosB.distanceToSquared(_tmpWorldPosA);
-        if (lenSq > bestLenSq) {
-          bestLenSq = lenSq;
-          bestChild = child;
-        }
-      }
-      return bestLenSq > 1e-10 ? bestChild : null;
+      return getPrimaryChildBoneModule(bone, canonicalBoneKey, _tmpWorldPosA, _tmpWorldPosB);
     }
 
-    function buildLegChainDiagnostics({ targetBones = [], sourceBones = [], names = {}, reason = "retarget" } = {}) {
-      const targetMap = buildCanonicalBoneMap(targetBones || []);
-      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
-      const rows = [];
-      const legSides = ["left", "right"];
-      for (const side of legSides) {
-        const upperKey = `${side}UpperLeg`;
-        const lowerKey = `${side}LowerLeg`;
-        const footKey = `${side}Foot`;
-        const toesKey = `${side}Toes`;
-        const targetUpper = targetMap.get(upperKey) || null;
-        const targetLower = targetMap.get(lowerKey) || null;
-        const targetFoot = targetMap.get(footKey) || null;
-        const targetToes = targetMap.get(toesKey) || null;
-        if (!targetUpper || !targetLower || !targetFoot) continue;
+    const alignmentTools = createViewerAlignmentTools({
+      canonicalBoneKey,
+      diag,
+      camera,
+      controls,
+      getSkeletonObj: () => skeletonObj,
+      getSourceResult: () => sourceResult,
+      getModelRoot: () => modelRoot,
+      getModelSkinnedMesh: () => modelSkinnedMesh,
+      hasSourceOverlay: () => hasSourceOverlay(),
+      setSourceOverlayYaw: (yaw) => setSourceOverlayYaw(yaw),
+      updateSourceOverlay: () => updateSourceOverlay(),
+      estimateFacingYawOffset,
+    });
 
-        const mappedUpperCanonical = canonicalBoneKey(names[targetUpper.name] || upperKey) || upperKey;
-        const mappedLowerCanonical = canonicalBoneKey(names[targetLower.name] || lowerKey) || lowerKey;
-        const mappedFootCanonical = canonicalBoneKey(names[targetFoot.name] || footKey) || footKey;
-        const mappedToesCanonical = canonicalBoneKey(targetToes ? (names[targetToes.name] || toesKey) : toesKey) || toesKey;
+    const {
+      objectHeight,
+      fitToSkeleton,
+      getModelSkeletonRootBone,
+      syncSourceDisplayToModel,
+      alignSourceHipsToModel,
+      alignModelHipsToSource,
+    } = alignmentTools;
 
-        const sourceUpper = sourceMap.get(mappedUpperCanonical) || null;
-        const sourceLower = sourceMap.get(mappedLowerCanonical) || null;
-        const sourceFoot = sourceMap.get(mappedFootCanonical) || null;
-        const sourceToes = sourceMap.get(mappedToesCanonical) || null;
-        if (!sourceUpper || !sourceLower || !sourceFoot) continue;
+    const skeletonProfileTools = createViewerSkeletonProfileTools({
+      windowRef: window,
+      buildCanonicalBoneMap,
+      getModelSkinnedMesh: () => modelSkinnedMesh,
+      getModelLabel: () => modelLabel,
+      getModelRigFingerprint: () => modelRigFingerprint,
+      vrmHumanoidBoneNames: VRM_HUMANOID_BONE_NAMES,
+    });
 
-        const targetUpperPos = new THREE.Vector3();
-        const targetLowerPos = new THREE.Vector3();
-        const targetFootPos = new THREE.Vector3();
-        const targetToesPos = targetToes ? new THREE.Vector3() : null;
-        const sourceUpperPos = new THREE.Vector3();
-        const sourceLowerPos = new THREE.Vector3();
-        const sourceFootPos = new THREE.Vector3();
-        const sourceToesPos = sourceToes ? new THREE.Vector3() : null;
+    const {
+      exportCurrentModelSkeletonProfile,
+    } = skeletonProfileTools;
 
-        targetUpper.getWorldPosition(targetUpperPos);
-        targetLower.getWorldPosition(targetLowerPos);
-        targetFoot.getWorldPosition(targetFootPos);
-        if (targetToes && targetToesPos) targetToes.getWorldPosition(targetToesPos);
-        sourceUpper.getWorldPosition(sourceUpperPos);
-        sourceLower.getWorldPosition(sourceLowerPos);
-        sourceFoot.getWorldPosition(sourceFootPos);
-        if (sourceToes && sourceToesPos) sourceToes.getWorldPosition(sourceToesPos);
+    const skeletonDebugTools = createViewerSkeletonDebugTools({
+      canonicalBoneKey,
+      buildCanonicalBoneMap,
+      getPrimaryChildBone,
+    });
 
-        const targetBendNormal = computeBendNormal(targetUpperPos, targetLowerPos, targetFootPos);
-        const sourceBendNormal = computeBendNormal(sourceUpperPos, sourceLowerPos, sourceFootPos);
-        const bendDot =
-          targetBendNormal && sourceBendNormal
-            ? Number(targetBendNormal.dot(sourceBendNormal).toFixed(4))
-            : null;
-        const bendAngleDeg =
-          targetBendNormal && sourceBendNormal
-            ? Number(THREE.MathUtils.radToDeg(targetBendNormal.angleTo(sourceBendNormal)).toFixed(3))
-            : null;
+    const {
+      getSkeletonCanonicalRows,
+      resolveSkeletonDumpCanonicals,
+    } = skeletonDebugTools;
 
-        rows.push({
-          side,
-          reason,
-          target: {
-            upper: targetUpper.name,
-            lower: targetLower.name,
-            foot: targetFoot.name,
-            toes: targetToes?.name || null,
-          },
-          source: {
-            upper: sourceUpper.name,
-            lower: sourceLower.name,
-            foot: sourceFoot.name,
-            toes: sourceToes?.name || null,
-          },
-          sourceCanonical: {
-            upper: mappedUpperCanonical,
-            lower: mappedLowerCanonical,
-            foot: mappedFootCanonical,
-            toes: sourceToes ? mappedToesCanonical : null,
-          },
-          thighAngleDeg: angleBetweenWorldSegments(targetUpperPos, targetLowerPos, sourceUpperPos, sourceLowerPos),
-          shinAngleDeg: angleBetweenWorldSegments(targetLowerPos, targetFootPos, sourceLowerPos, sourceFootPos),
-          footAngleDeg:
-            targetToesPos && sourceToesPos
-              ? angleBetweenWorldSegments(targetFootPos, targetToesPos, sourceFootPos, sourceToesPos)
-              : null,
-          bendAngleDeg,
-          bendDot,
-          bendMirrored: bendDot != null ? bendDot < 0 : null,
-          targetBendNormal: toRoundedVec3(targetBendNormal),
-          sourceBendNormal: toRoundedVec3(sourceBendNormal),
-        });
-      }
-      legChainDiagLog = rows;
-      window.__vid2modelLegChainDiag = rows;
-      return rows;
-    }
+    const boneLabels = createViewerBoneLabels({
+      scene,
+      canonicalBoneKey,
+      buildCanonicalBoneMap,
+      resolveSkeletonDumpCanonicals,
+      getRetargetStage,
+      getRetargetTargetBones,
+      getSourceBones: () => sourceResult?.skeleton?.bones || [],
+      getDebugNames: () => window.__vid2modelDebug?.names || {},
+      getModelRoot: () => modelRoot,
+      objectHeight,
+    });
 
-    function dumpLegChainDiagLog(reason = "retarget") {
-      const rows = Array.isArray(legChainDiagLog) ? legChainDiagLog.slice() : [];
-      window.__vid2modelLegChainDiag = rows;
-      if (!rows.length) return;
-      const suspicious = rows.filter((row) => {
-        const segmentWorst = Math.max(row.thighAngleDeg || 0, row.shinAngleDeg || 0, row.footAngleDeg || 0);
-        return row.bendMirrored === true || segmentWorst >= 90 || (row.bendAngleDeg || 0) >= 90;
-      });
-      if (!isVerboseDiagMode() && !suspicious.length) return;
-      console.log("[vid2model/diag] leg-chain", {
-        reason,
-        total: rows.length,
-        suspicious: suspicious.length,
-      });
-      if (isVerboseDiagMode()) {
-        console.table(rows);
-      } else if (suspicious.length) {
-        console.table(suspicious);
-      }
-    }
+    const {
+      clearBoneLabels,
+      refreshBoneLabels,
+      updateBoneLabels,
+    } = boneLabels;
 
-    function buildArmChainDiagnostics({ targetBones = [], sourceBones = [], names = {}, reason = "retarget" } = {}) {
-      const targetMap = buildCanonicalBoneMap(targetBones || []);
-      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
-      const rows = [];
-      const armSides = ["left", "right"];
-      for (const side of armSides) {
-        const upperKey = `${side}UpperArm`;
-        const lowerKey = `${side}LowerArm`;
-        const handKey = `${side}Hand`;
-        const targetUpper = targetMap.get(upperKey) || null;
-        const targetLower = targetMap.get(lowerKey) || null;
-        const targetHand = targetMap.get(handKey) || null;
-        if (!targetUpper || !targetLower || !targetHand) continue;
+    const sourceAxesDebugTools = createViewerSourceAxesDebug({
+      scene,
+      buildCanonicalBoneMap,
+    });
 
-        const mappedUpperCanonical = canonicalBoneKey(names[targetUpper.name] || upperKey) || upperKey;
-        const mappedLowerCanonical = canonicalBoneKey(names[targetLower.name] || lowerKey) || lowerKey;
-        const mappedHandCanonical = canonicalBoneKey(names[targetHand.name] || handKey) || handKey;
+    const {
+      clearSourceAxesDebug,
+      createSourceAxesDebug,
+      updateSourceAxesDebug,
+    } = sourceAxesDebugTools;
 
-        const sourceUpper = sourceMap.get(mappedUpperCanonical) || null;
-        const sourceLower = sourceMap.get(mappedLowerCanonical) || null;
-        const sourceHand = sourceMap.get(mappedHandCanonical) || null;
-        if (!sourceUpper || !sourceLower || !sourceHand) continue;
+    const sourceOverlayTools = createViewerSourceOverlay({
+      scene,
+      clearSourceOverlayModule,
+      createSourceOverlayModule,
+      updateSourceOverlayModule,
+      skeletonColor: SKELETON_COLOR,
+      sourcePointColor: SOURCE_POINT_COLOR,
+      overlayUpAxis: _overlayUpAxis,
+      overlayPivot: _overlayPivot,
+      refreshBoneLabels,
+      updateSourceAxesDebug,
+    });
 
-        const targetUpperPos = new THREE.Vector3();
-        const targetLowerPos = new THREE.Vector3();
-        const targetHandPos = new THREE.Vector3();
-        const sourceUpperPos = new THREE.Vector3();
-        const sourceLowerPos = new THREE.Vector3();
-        const sourceHandPos = new THREE.Vector3();
-        const targetHandChild = getPrimaryChildBone(targetHand);
-        const sourceHandChild = getPrimaryChildBone(sourceHand);
-        const targetHandChildPos = targetHandChild ? new THREE.Vector3() : null;
-        const sourceHandChildPos = sourceHandChild ? new THREE.Vector3() : null;
+    const {
+      getSourceOverlay,
+      hasSourceOverlay,
+      clearSourceOverlay,
+      updateSourceOverlay,
+      createSourceOverlay,
+      setSourceOverlayYaw,
+    } = sourceOverlayTools;
 
-        targetUpper.getWorldPosition(targetUpperPos);
-        targetLower.getWorldPosition(targetLowerPos);
-        targetHand.getWorldPosition(targetHandPos);
-        if (targetHandChild && targetHandChildPos) targetHandChild.getWorldPosition(targetHandChildPos);
-        sourceUpper.getWorldPosition(sourceUpperPos);
-        sourceLower.getWorldPosition(sourceLowerPos);
-        sourceHand.getWorldPosition(sourceHandPos);
-        if (sourceHandChild && sourceHandChildPos) sourceHandChild.getWorldPosition(sourceHandChildPos);
+    const runtimeDiagnostics = createViewerRuntimeDiagnostics({
+      windowRef: window,
+      diag,
+      isVerboseDiagMode,
+      collectLimbDiagnostics,
+      dumpRetargetAlignmentDiagnostics,
+      dumpRestCorrectionLog,
+      buildLegChainDiagnostics,
+      dumpLegChainDiagLog,
+      buildArmChainDiagnostics,
+      dumpArmChainDiagLog,
+      buildTorsoChainDiagnostics,
+      dumpTorsoChainDiagLog,
+      buildFootChainDiagnostics,
+      dumpFootChainDiagLog,
+      dumpFootCorrectionDebug,
+      getSkeletonCanonicalRows,
+      resolveSkeletonDumpCanonicals,
+      getRetargetTargetBones,
+      getRetargetStage,
+      getSourceOverlay,
+      overlayUpAxis: _overlayUpAxis,
+    });
 
-        const targetBendNormal = computeBendNormal(targetUpperPos, targetLowerPos, targetHandPos);
-        const sourceBendNormal = computeBendNormal(sourceUpperPos, sourceLowerPos, sourceHandPos);
-        const bendDot =
-          targetBendNormal && sourceBendNormal
-            ? Number(targetBendNormal.dot(sourceBendNormal).toFixed(4))
-            : null;
-        const bendAngleDeg =
-          targetBendNormal && sourceBendNormal
-            ? Number(THREE.MathUtils.radToDeg(targetBendNormal.angleTo(sourceBendNormal)).toFixed(3))
-            : null;
-
-        rows.push({
-          side,
-          reason,
-          target: {
-            upper: targetUpper.name,
-            lower: targetLower.name,
-            hand: targetHand.name,
-            handChild: targetHandChild?.name || null,
-          },
-          source: {
-            upper: sourceUpper.name,
-            lower: sourceLower.name,
-            hand: sourceHand.name,
-            handChild: sourceHandChild?.name || null,
-          },
-          sourceCanonical: {
-            upper: mappedUpperCanonical,
-            lower: mappedLowerCanonical,
-            hand: mappedHandCanonical,
-          },
-          upperAngleDeg: angleBetweenWorldSegments(targetUpperPos, targetLowerPos, sourceUpperPos, sourceLowerPos),
-          lowerAngleDeg: angleBetweenWorldSegments(targetLowerPos, targetHandPos, sourceLowerPos, sourceHandPos),
-          handAngleDeg:
-            targetHandChildPos && sourceHandChildPos
-              ? angleBetweenWorldSegments(targetHandPos, targetHandChildPos, sourceHandPos, sourceHandChildPos)
-              : null,
-          bendAngleDeg,
-          bendDot,
-          bendMirrored: bendDot != null ? bendDot < 0 : null,
-          targetBendNormal: toRoundedVec3(targetBendNormal),
-          sourceBendNormal: toRoundedVec3(sourceBendNormal),
-        });
-      }
-      armChainDiagLog = rows;
-      window.__vid2modelArmChainDiag = rows;
-      return rows;
-    }
-
-    function dumpArmChainDiagLog(reason = "retarget") {
-      const rows = Array.isArray(armChainDiagLog) ? armChainDiagLog.slice() : [];
-      window.__vid2modelArmChainDiag = rows;
-      if (!rows.length) return;
-      const suspicious = rows.filter((row) => {
-        const segmentWorst = Math.max(row.upperAngleDeg || 0, row.lowerAngleDeg || 0, row.handAngleDeg || 0);
-        return row.bendMirrored === true || segmentWorst >= 90 || (row.bendAngleDeg || 0) >= 90;
-      });
-      if (!isVerboseDiagMode() && !suspicious.length) return;
-      console.log("[vid2model/diag] arm-chain", {
-        reason,
-        total: rows.length,
-        suspicious: suspicious.length,
-      });
-      if (isVerboseDiagMode()) {
-        console.table(rows);
-      } else if (suspicious.length) {
-        console.table(suspicious);
-      }
-    }
-
-    function buildTorsoChainDiagnostics({ targetBones = [], sourceBones = [], names = {}, reason = "retarget" } = {}) {
-      const targetMap = buildCanonicalBoneMap(targetBones || []);
-      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
-      const rows = [];
-      const chain = [
-        ["hips", "spine"],
-        ["spine", "chest"],
-        ["chest", "upperChest"],
-        ["upperChest", "neck"],
-        ["neck", "head"],
-      ];
-      for (const [startKey, endKey] of chain) {
-        const targetStart = targetMap.get(startKey) || null;
-        const targetEnd = targetMap.get(endKey) || null;
-        if (!targetStart || !targetEnd) continue;
-        const mappedStartCanonical = canonicalBoneKey(names[targetStart.name] || startKey) || startKey;
-        const mappedEndCanonical = canonicalBoneKey(names[targetEnd.name] || endKey) || endKey;
-        const sourceStart = sourceMap.get(mappedStartCanonical) || null;
-        const sourceEnd = sourceMap.get(mappedEndCanonical) || null;
-        if (!sourceStart || !sourceEnd) continue;
-
-        const targetStartPos = new THREE.Vector3();
-        const targetEndPos = new THREE.Vector3();
-        const sourceStartPos = new THREE.Vector3();
-        const sourceEndPos = new THREE.Vector3();
-        targetStart.getWorldPosition(targetStartPos);
-        targetEnd.getWorldPosition(targetEndPos);
-        sourceStart.getWorldPosition(sourceStartPos);
-        sourceEnd.getWorldPosition(sourceEndPos);
-
-        const targetDir = new THREE.Vector3().subVectors(targetEndPos, targetStartPos).normalize();
-        const sourceDir = new THREE.Vector3().subVectors(sourceEndPos, sourceStartPos).normalize();
-        const segmentAngleDeg = angleBetweenWorldSegments(targetStartPos, targetEndPos, sourceStartPos, sourceEndPos);
-        const segmentDot =
-          targetDir.lengthSq() > 1e-10 && sourceDir.lengthSq() > 1e-10
-            ? Number(targetDir.dot(sourceDir).toFixed(4))
-            : null;
-        const targetLen = targetEndPos.distanceTo(targetStartPos);
-        const sourceLen = sourceEndPos.distanceTo(sourceStartPos);
-        const lengthRatio = targetLen > 1e-6 && sourceLen > 1e-6 ? Number((targetLen / sourceLen).toFixed(4)) : null;
-
-        rows.push({
-          reason,
-          segment: `${startKey}->${endKey}`,
-          target: {
-            start: targetStart.name,
-            end: targetEnd.name,
-          },
-          source: {
-            start: sourceStart.name,
-            end: sourceEnd.name,
-          },
-          sourceCanonical: {
-            start: mappedStartCanonical,
-            end: mappedEndCanonical,
-          },
-          segmentAngleDeg,
-          segmentDot,
-          targetLen: Number(targetLen.toFixed(5)),
-          sourceLen: Number(sourceLen.toFixed(5)),
-          lengthRatio,
-          targetDir: toRoundedVec3(targetDir),
-          sourceDir: toRoundedVec3(sourceDir),
-        });
-      }
-      const targetLeftShoulder = targetMap.get("leftShoulder") || null;
-      const targetRightShoulder = targetMap.get("rightShoulder") || null;
-      const sourceLeftShoulder = sourceMap.get("leftShoulder") || null;
-      const sourceRightShoulder = sourceMap.get("rightShoulder") || null;
-      if (targetLeftShoulder && targetRightShoulder && sourceLeftShoulder && sourceRightShoulder) {
-        const tls = new THREE.Vector3();
-        const trs = new THREE.Vector3();
-        const sls = new THREE.Vector3();
-        const srs = new THREE.Vector3();
-        targetLeftShoulder.getWorldPosition(tls);
-        targetRightShoulder.getWorldPosition(trs);
-        sourceLeftShoulder.getWorldPosition(sls);
-        sourceRightShoulder.getWorldPosition(srs);
-        rows.push({
-          reason,
-          segment: "shoulder-span",
-          target: { start: targetLeftShoulder.name, end: targetRightShoulder.name },
-          source: { start: sourceLeftShoulder.name, end: sourceRightShoulder.name },
-          sourceCanonical: { start: "leftShoulder", end: "rightShoulder" },
-          segmentAngleDeg: angleBetweenWorldSegments(tls, trs, sls, srs),
-          segmentDot: null,
-          targetLen: Number(tls.distanceTo(trs).toFixed(5)),
-          sourceLen: Number(sls.distanceTo(srs).toFixed(5)),
-          lengthRatio:
-            tls.distanceTo(trs) > 1e-6 && sls.distanceTo(srs) > 1e-6
-              ? Number((tls.distanceTo(trs) / sls.distanceTo(srs)).toFixed(4))
-              : null,
-          targetDir: toRoundedVec3(new THREE.Vector3().subVectors(trs, tls).normalize()),
-          sourceDir: toRoundedVec3(new THREE.Vector3().subVectors(srs, sls).normalize()),
-        });
-      }
-      torsoChainDiagLog = rows;
-      window.__vid2modelTorsoChainDiag = rows;
-      return rows;
-    }
-
-    function dumpTorsoChainDiagLog(reason = "retarget") {
-      const rows = Array.isArray(torsoChainDiagLog) ? torsoChainDiagLog.slice() : [];
-      window.__vid2modelTorsoChainDiag = rows;
-      if (!rows.length) return;
-      const suspicious = rows.filter((row) => {
-        return (row.segmentAngleDeg || 0) >= 45 || (row.lengthRatio != null && (row.lengthRatio > 1.35 || row.lengthRatio < 0.75));
-      });
-      if (!isVerboseDiagMode() && !suspicious.length) return;
-      console.log("[vid2model/diag] torso-chain", {
-        reason,
-        total: rows.length,
-        suspicious: suspicious.length,
-      });
-      if (isVerboseDiagMode()) {
-        console.table(rows);
-      } else if (suspicious.length) {
-        console.table(suspicious);
-      }
-    }
-
-    function buildFootChainDiagnostics({ targetBones = [], sourceBones = [], names = {}, reason = "retarget" } = {}) {
-      const targetMap = buildCanonicalBoneMap(targetBones || []);
-      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
-      const rows = [];
-      const legSides = ["left", "right"];
-      for (const side of legSides) {
-        const footKey = `${side}Foot`;
-        const toesKey = `${side}Toes`;
-        const targetFoot = targetMap.get(footKey) || null;
-        const targetToes = targetMap.get(toesKey) || getPrimaryChildBone(targetFoot) || null;
-        if (!targetFoot || !targetToes) continue;
-        const mappedFootCanonical = canonicalBoneKey(names[targetFoot.name] || footKey) || footKey;
-        const mappedToesCanonical = canonicalBoneKey(names[targetToes.name] || toesKey) || toesKey;
-        const sourceFoot = sourceMap.get(mappedFootCanonical) || null;
-        const sourceToes = sourceMap.get(mappedToesCanonical) || getPrimaryChildBone(sourceFoot) || null;
-        if (!sourceFoot || !sourceToes) continue;
-
-        const targetFootPos = new THREE.Vector3();
-        const targetToesPos = new THREE.Vector3();
-        const sourceFootPos = new THREE.Vector3();
-        const sourceToesPos = new THREE.Vector3();
-        targetFoot.getWorldPosition(targetFootPos);
-        targetToes.getWorldPosition(targetToesPos);
-        sourceFoot.getWorldPosition(sourceFootPos);
-        sourceToes.getWorldPosition(sourceToesPos);
-
-        const footAngleDeg = angleBetweenWorldSegments(targetFootPos, targetToesPos, sourceFootPos, sourceToesPos);
-        const targetDir = targetToesPos.sub(targetFootPos).normalize();
-        const sourceDir = sourceToesPos.sub(sourceFootPos).normalize();
-        const footDot =
-          targetDir.lengthSq() > 1e-10 && sourceDir.lengthSq() > 1e-10
-            ? Number(targetDir.dot(sourceDir).toFixed(4))
-            : null;
-
-        rows.push({
-          side,
-          reason,
-          target: {
-            foot: targetFoot.name,
-            toes: targetToes.name,
-          },
-          source: {
-            foot: sourceFoot.name,
-            toes: sourceToes.name,
-          },
-          sourceCanonical: {
-            foot: mappedFootCanonical,
-            toes: mappedToesCanonical,
-          },
-          footAngleDeg,
-          footDot,
-          footMirrored: footDot != null ? footDot < 0 : null,
-          targetFootDir: toRoundedVec3(targetDir),
-          sourceFootDir: toRoundedVec3(sourceDir),
-        });
-      }
-      footChainDiagLog = rows;
-      window.__vid2modelFootChainDiag = rows;
-      return rows;
-    }
-
-    function dumpFootChainDiagLog(reason = "retarget") {
-      const rows = Array.isArray(footChainDiagLog) ? footChainDiagLog.slice() : [];
-      window.__vid2modelFootChainDiag = rows;
-      if (!rows.length) return;
-      const suspicious = rows.filter((row) => row.footMirrored === true || (row.footAngleDeg || 0) >= 45);
-      if (!isVerboseDiagMode() && !suspicious.length) return;
-      console.log("[vid2model/diag] foot-chain", {
-        reason,
-        total: rows.length,
-        suspicious: suspicious.length,
-      });
-      if (isVerboseDiagMode() || !suspicious.length) {
-        console.table(rows);
-      } else {
-        console.table(suspicious);
-      }
-    }
-
-    function dumpFootCorrectionDebug(reason = "retarget") {
-      const rows = Array.isArray(window.__vid2modelFootCorrectionDebug)
-        ? window.__vid2modelFootCorrectionDebug.slice()
-        : [];
-      window.__vid2modelFootCorrectionDebug = rows;
-      if (!rows.length) return;
-      const suspicious = rows.filter((row) => {
-        const before = Number.isFinite(row?.footDotBefore) ? row.footDotBefore : null;
-        const after = Number.isFinite(row?.footDotAfter) ? row.footDotAfter : null;
-        if (before == null || after == null) return false;
-        return after <= before + 1e-4;
-      });
-      if (!isVerboseDiagMode() && !suspicious.length) return;
-      console.log("[vid2model/diag] foot-correction-debug", {
-        reason,
-        total: rows.length,
-        suspicious: suspicious.length,
-      });
-      console.table(suspicious.length ? suspicious : rows);
-    }
-
-    function disposeBoneLabelSprite(sprite) {
-      if (!sprite) return;
-      if (sprite.material?.map) sprite.material.map.dispose();
-      if (sprite.material) sprite.material.dispose();
-    }
-
-    function clearBoneLabels(kind = "both") {
-      const keys = kind === "both" ? ["source", "target"] : [kind];
-      for (const key of keys) {
-        const entry = boneLabelDebug[key];
-        if (!entry) continue;
-        scene.remove(entry.group);
-        for (const sprite of entry.sprites || []) {
-          disposeBoneLabelSprite(sprite);
-        }
-        boneLabelDebug[key] = null;
-      }
-    }
-
-    function createBoneLabelSprite(text, palette = {}) {
-      const canvas = document.createElement("canvas");
-      canvas.width = 512;
-      canvas.height = 196;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-      const bg = palette.bg || "rgba(15, 23, 42, 0.82)";
-      const fg = palette.fg || "#f8fafc";
-      const stroke = palette.stroke || "rgba(148, 163, 184, 0.9)";
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = bg;
-      ctx.strokeStyle = stroke;
-      ctx.lineWidth = 4;
-      const radius = 18;
-      ctx.beginPath();
-      ctx.moveTo(radius, 10);
-      ctx.lineTo(canvas.width - radius, 10);
-      ctx.quadraticCurveTo(canvas.width - 10, 10, canvas.width - 10, radius);
-      ctx.lineTo(canvas.width - 10, canvas.height - radius - 10);
-      ctx.quadraticCurveTo(canvas.width - 10, canvas.height - 10, canvas.width - radius, canvas.height - 10);
-      ctx.lineTo(radius, canvas.height - 10);
-      ctx.quadraticCurveTo(10, canvas.height - 10, 10, canvas.height - radius - 10);
-      ctx.lineTo(10, radius);
-      ctx.quadraticCurveTo(10, 10, radius, 10);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      const lines = String(text || "").split("\n").filter(Boolean).slice(0, 3);
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = fg;
-      if (lines.length >= 3) {
-        ctx.font = "bold 34px sans-serif";
-        ctx.fillText(lines[0], canvas.width / 2, 42);
-        ctx.font = "24px monospace";
-        ctx.fillText(lines[1], canvas.width / 2, 96);
-        ctx.fillText(lines[2], canvas.width / 2, 146);
-      } else if (lines.length === 2) {
-        ctx.font = "bold 38px sans-serif";
-        ctx.fillText(lines[0], canvas.width / 2, 58);
-        ctx.font = "26px monospace";
-        ctx.fillText(lines[1], canvas.width / 2, 118);
-      } else {
-        ctx.font = "bold 42px sans-serif";
-        ctx.fillText(lines[0] || "", canvas.width / 2, canvas.height / 2);
-      }
-
-      const texture = new THREE.CanvasTexture(canvas);
-      texture.needsUpdate = true;
-      const material = new THREE.SpriteMaterial({
-        map: texture,
-        transparent: true,
-        depthTest: false,
-        depthWrite: false,
-        sizeAttenuation: true,
-      });
-      const sprite = new THREE.Sprite(material);
-      sprite.renderOrder = 1000;
-      return sprite;
-    }
-
-    function getNearestSourceCanonicalForBone(targetBone, scope = "legs") {
-      if (!targetBone?.isBone) return "";
-      const sourceBones = sourceResult?.skeleton?.bones || [];
-      if (!sourceBones.length) return "";
-      const canonicals = resolveSkeletonDumpCanonicals(scope);
-      if (!canonicals?.length) return "";
-      const sourceMap = buildCanonicalBoneMap(sourceBones);
-      targetBone.getWorldPosition(_tmpWorldPosA);
-      let bestCanonical = "";
-      let bestDistanceSq = Infinity;
-      for (const canonical of canonicals) {
-        const sourceBone = sourceMap.get(canonical) || null;
-        if (!sourceBone?.isBone) continue;
-        sourceBone.getWorldPosition(_tmpWorldPosB);
-        const distanceSq = _tmpWorldPosA.distanceToSquared(_tmpWorldPosB);
-        if (distanceSq < bestDistanceSq) {
-          bestDistanceSq = distanceSq;
-          bestCanonical = canonical;
-        }
-      }
-      return bestCanonical;
-    }
-
-    function getBoneLabelText(kind, canonical, bone, scope = "legs") {
-      const prefix = kind === "target" ? "MODEL" : "SRC";
-      const label = String(canonical || bone?.name || "").trim();
-      const rawName = String(bone?.name || "").trim();
-      if (kind === "target") {
-        const names = window.__vid2modelDebug?.names || {};
-        const mappedSourceCanonical =
-          bone?.name ? (canonicalBoneKey(names[bone.name] || "") || "") : "";
-        const nearestSourceCanonical = getNearestSourceCanonicalForBone(bone, scope);
-        if (!label) return rawName ? `${prefix}\n${rawName}` : prefix;
-        const lines = [`${prefix} ${label}`];
-        if (mappedSourceCanonical) {
-          lines.push(`MAP SRC ${mappedSourceCanonical}`);
-        }
-        if (nearestSourceCanonical && nearestSourceCanonical !== mappedSourceCanonical) {
-          lines.push(`POS SRC ${nearestSourceCanonical}`);
-        }
-        if (lines.length > 1) return lines.join("\n");
-      }
-      if (!label) return rawName ? `${prefix}\n${rawName}` : prefix;
-      if (!rawName || rawName === label) return `${prefix}\n${label}`;
-      return `${prefix} ${label}\n${rawName}`;
-    }
-
-    function getBoneLabelScale(kind) {
-      const root = kind === "target" ? modelRoot : (sourceResult?.skeleton?.bones?.[0] || null);
-      const height = objectHeight(root);
-      const scale = Number.isFinite(height) && height > 0 ? height * 0.14 : 0.18;
-      return Math.max(0.08, Math.min(0.38, scale));
-    }
-
-    function buildBoneLabelDebug(kind = "source", scope = "legs") {
-      const canonicals = resolveSkeletonDumpCanonicals(scope);
-      const bones =
-        kind === "target"
-          ? getRetargetTargetBones(getRetargetStage(), { preferNormalized: false })
-          : (sourceResult?.skeleton?.bones || []);
-      if (!bones.length || !canonicals.length) return null;
-      const boneMap = buildCanonicalBoneMap(bones);
-      const group = new THREE.Group();
-      const sprites = [];
-      const palette =
-        kind === "target"
-          ? { bg: "rgba(120, 53, 15, 0.84)", fg: "#fff7ed", stroke: "rgba(251, 146, 60, 0.95)" }
-          : { bg: "rgba(30, 41, 59, 0.84)", fg: "#eff6ff", stroke: "rgba(96, 165, 250, 0.95)" };
-      const scale = getBoneLabelScale(kind);
-      for (const canonical of canonicals) {
-        const bone = boneMap.get(canonical) || null;
-        if (!bone?.isBone) continue;
-        const sprite = createBoneLabelSprite(getBoneLabelText(kind, canonical, bone, scope), palette);
-        if (!sprite) continue;
-        sprite.scale.set(scale, scale * 0.34, 1);
-        group.add(sprite);
-        sprites.push(sprite);
-      }
-      if (!sprites.length) return null;
-      scene.add(group);
-      return { group, sprites, bones: canonicals.map((canonical) => boneMap.get(canonical) || null), scale };
-    }
-
-    function updateBoneLabels() {
-      const yOffset = 0.06;
-      const xOffset = 0.04;
-      for (const [kind, entry] of Object.entries(boneLabelDebug)) {
-        if (!entry?.sprites?.length) continue;
-        for (let i = 0; i < entry.sprites.length; i += 1) {
-          const sprite = entry.sprites[i];
-          const bone = entry.bones[i];
-          if (!sprite || !bone?.isBone) continue;
-          bone.getWorldPosition(_tmpWorldPosA);
-          const canonical = canonicalBoneKey(bone.name) || "";
-          const sideX = canonical.startsWith("left") ? -xOffset : canonical.startsWith("right") ? xOffset : 0;
-          sprite.position.set(_tmpWorldPosA.x + sideX, _tmpWorldPosA.y + yOffset, _tmpWorldPosA.z);
-        }
-      }
-    }
-
-    function refreshBoneLabels() {
-      const cfg = window.__vid2modelBoneLabels || { enabled: false, which: "both", scope: "legs" };
-      clearBoneLabels("both");
-      if (!cfg.enabled) return;
-      if (cfg.which === "source" || cfg.which === "both") {
-        boneLabelDebug.source = buildBoneLabelDebug("source", cfg.scope);
-      }
-      if (cfg.which === "target" || cfg.which === "both") {
-        boneLabelDebug.target = buildBoneLabelDebug("target", cfg.scope);
-      }
-      updateBoneLabels();
-    }
-
-    function formatVec3(vec) {
-      if (!vec || !Number.isFinite(vec.x) || !Number.isFinite(vec.y) || !Number.isFinite(vec.z)) return "";
-      return `${vec.x.toFixed(2)}, ${vec.y.toFixed(2)}, ${vec.z.toFixed(2)}`;
-    }
-
-    function getBoneWorldPosString(bone) {
-      if (!bone?.isBone) return "";
-      bone.getWorldPosition(_tmpWorldPosA);
-      return formatVec3(_tmpWorldPosA);
-    }
-
-    function getBonePrimaryChildWorldDirString(bone) {
-      if (!bone?.isBone) return "";
-      const child = getPrimaryChildBone(bone);
-      if (!child) return "";
-      bone.getWorldPosition(_tmpWorldPosA);
-      child.getWorldPosition(_tmpWorldPosB);
-      _tmpWorldPosB.sub(_tmpWorldPosA);
-      if (_tmpWorldPosB.lengthSq() < 1e-10) return "";
-      _tmpWorldPosB.normalize();
-      return formatVec3(_tmpWorldPosB);
-    }
-
-    function getSkeletonCanonicalRows({ targetBones = [], sourceBones = [], names = {}, canonicals = [] } = {}) {
-      const targetMap = buildCanonicalBoneMap(targetBones || []);
-      const sourceMap = buildCanonicalBoneMap(sourceBones || []);
-      return (canonicals || []).map((canonical, index) => {
-        const targetBone = targetMap.get(canonical) || null;
-        const sourceCanonical = targetBone
-          ? (canonicalBoneKey(names[targetBone.name] || canonical) || canonical)
-          : canonical;
-        const sourceBone = sourceMap.get(sourceCanonical) || null;
-        return {
-          index,
-          canonical,
-          targetBone: targetBone?.name || "",
-          targetParent: targetBone?.parent?.isBone ? targetBone.parent.name : "",
-          targetChild: getPrimaryChildBone(targetBone)?.name || "",
-          targetWorldPos: getBoneWorldPosString(targetBone),
-          targetDir: getBonePrimaryChildWorldDirString(targetBone),
-          mappedSourceCanonical: sourceCanonical,
-          sourceBone: sourceBone?.name || "",
-          sourceParent: sourceBone?.parent?.isBone ? sourceBone.parent.name : "",
-          sourceChild: getPrimaryChildBone(sourceBone)?.name || "",
-          sourceWorldPos: getBoneWorldPosString(sourceBone),
-          sourceDir: getBonePrimaryChildWorldDirString(sourceBone),
-        };
-      });
-    }
-
-    function resolveSkeletonDumpCanonicals(scope = "legs") {
-      const normalized = String(scope || "legs").trim().toLowerCase();
-      if (normalized === "left-arm" || normalized === "arm-left") {
-        return ["leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand"];
-      }
-      if (normalized === "right-arm" || normalized === "arm-right") {
-        return ["rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand"];
-      }
-      if (normalized === "arms") {
-        return [
-          "leftShoulder",
-          "leftUpperArm",
-          "leftLowerArm",
-          "leftHand",
-          "rightShoulder",
-          "rightUpperArm",
-          "rightLowerArm",
-          "rightHand",
-        ];
-      }
-      if (normalized === "torso") {
-        return ["hips", "spine", "chest", "upperChest", "neck", "head"];
-      }
-      if (normalized === "head") {
-        return ["upperChest", "neck", "head"];
-      }
-      if (normalized === "left" || normalized === "left-leg") {
-        return ["leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes"];
-      }
-      if (normalized === "right" || normalized === "right-leg") {
-        return ["rightUpperLeg", "rightLowerLeg", "rightFoot", "rightToes"];
-      }
-      if (normalized === "body") {
-        return [
-          "hips",
-          "spine",
-          "chest",
-          "upperChest",
-          "leftShoulder",
-          "leftUpperArm",
-          "leftLowerArm",
-          "leftHand",
-          "rightShoulder",
-          "rightUpperArm",
-          "rightLowerArm",
-          "rightHand",
-          "leftUpperLeg",
-          "leftLowerLeg",
-          "leftFoot",
-          "leftToes",
-          "rightUpperLeg",
-          "rightLowerLeg",
-          "rightFoot",
-          "rightToes",
-        ];
-      }
-      return [
-        "leftUpperLeg",
-        "leftLowerLeg",
-        "leftFoot",
-        "leftToes",
-        "rightUpperLeg",
-        "rightLowerLeg",
-        "rightFoot",
-        "rightToes",
-      ];
-    }
-
-    function clearSourceAxesDebug() {
-      if (!sourceAxesDebug) return;
-      scene.remove(sourceAxesDebug.group);
-      sourceAxesDebug = null;
-    }
-
-    function createSourceAxesDebug(skeleton) {
-      clearSourceAxesDebug();
-      const group = new THREE.Group();
-      const axisLength = 55;
-      const headLength = 12;
-      const headWidth = 6;
-      const upArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), axisLength, 0x22c55e, headLength, headWidth);
-      const rightArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), axisLength, 0xef4444, headLength, headWidth);
-      const forwardArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), axisLength, 0x3b82f6, headLength, headWidth);
-      group.add(upArrow, rightArrow, forwardArrow);
-      scene.add(group);
-      sourceAxesDebug = {
-        skeleton,
-        group,
-        upArrow,
-        rightArrow,
-        forwardArrow,
-      };
-      updateSourceAxesDebug();
-    }
-
-    function updateSourceAxesDebug() {
-      if (!sourceAxesDebug?.skeleton?.bones?.length) return;
-      const canonicalMap = buildCanonicalBoneMap(sourceAxesDebug.skeleton.bones);
-      const hips = canonicalMap.get("hips") || sourceAxesDebug.skeleton.bones[0];
-      if (!hips) return;
-      hips.updateMatrixWorld(true);
-      hips.getWorldPosition(_sourceAxisOrigin);
-
-      const head = canonicalMap.get("head") || canonicalMap.get("neck") || canonicalMap.get("upperChest") || canonicalMap.get("chest");
-      const leftHand = canonicalMap.get("leftHand");
-      const rightHand = canonicalMap.get("rightHand");
-      const leftFoot = canonicalMap.get("leftFoot") || canonicalMap.get("leftToes");
-      const rightFoot = canonicalMap.get("rightFoot") || canonicalMap.get("rightToes");
-
-      if (head) {
-        head.getWorldPosition(_sourceAxisHead);
-        _sourceAxisUp.copy(_sourceAxisHead).sub(_sourceAxisOrigin).normalize();
-      } else {
-        _sourceAxisUp.set(0, 1, 0);
-      }
-      if (_sourceAxisUp.lengthSq() < 1e-8) _sourceAxisUp.set(0, 1, 0);
-
-      if (leftHand && rightHand) {
-        leftHand.getWorldPosition(_sourceAxisLeft);
-        rightHand.getWorldPosition(_sourceAxisRight);
-        _sourceAxisSide.copy(_sourceAxisRight).sub(_sourceAxisLeft).normalize();
-      } else {
-        _sourceAxisSide.set(1, 0, 0);
-      }
-      if (_sourceAxisSide.lengthSq() < 1e-8) _sourceAxisSide.set(1, 0, 0);
-
-      _sourceAxisForward.crossVectors(_sourceAxisSide, _sourceAxisUp).normalize();
-      if (_sourceAxisForward.lengthSq() < 1e-8) _sourceAxisForward.set(0, 0, 1);
-
-      const axisLength = 55;
-      sourceAxesDebug.upArrow.position.copy(_sourceAxisOrigin);
-      sourceAxesDebug.upArrow.setDirection(_sourceAxisUp);
-      sourceAxesDebug.upArrow.setLength(axisLength, 12, 6);
-
-      sourceAxesDebug.rightArrow.position.copy(_sourceAxisOrigin);
-      sourceAxesDebug.rightArrow.setDirection(_sourceAxisSide);
-      sourceAxesDebug.rightArrow.setLength(axisLength, 12, 6);
-
-      sourceAxesDebug.forwardArrow.position.copy(_sourceAxisOrigin);
-      sourceAxesDebug.forwardArrow.setDirection(_sourceAxisForward);
-      sourceAxesDebug.forwardArrow.setLength(axisLength, 12, 6);
-
-    }
-
-    function clearSourceOverlay() {
-      sourceOverlay = clearSourceOverlayModule({ sourceOverlay, scene });
-    }
+    const {
+      logModelBones: logRuntimeModelBones,
+      publishRetargetDiagnostics,
+      dumpAlignment: dumpRuntimeAlignment,
+      dumpSkeleton: dumpRuntimeSkeleton,
+    } = runtimeDiagnostics;
 
     function estimateFacingYawOffset(sourceBones, targetBones) {
       return estimateFacingYawOffsetModule(sourceBones, targetBones);
-    }
-
-    function updateSourceOverlay() {
-      updateSourceOverlayModule({
-        sourceOverlay,
-        overlayUpAxis: _overlayUpAxis,
-        overlayPivot: _overlayPivot,
-      });
-      updateSourceAxesDebug();
-    }
-
-    function createSourceOverlay(skeleton) {
-      sourceOverlay = createSourceOverlayModule({
-        skeleton,
-        scene,
-        sourceOverlay,
-        skeletonColor: SKELETON_COLOR,
-        sourcePointColor: SOURCE_POINT_COLOR,
-        clearSourceOverlay: () => {
-          sourceOverlay = clearSourceOverlayModule({ sourceOverlay, scene });
-        },
-        updateSourceOverlay: (overlay) =>
-          updateSourceOverlayModule({
-            sourceOverlay: overlay,
-            overlayUpAxis: _overlayUpAxis,
-            overlayPivot: _overlayPivot,
-          }),
-      });
-      refreshBoneLabels();
-    }
-
-    function fitToSkeleton(root) {
-      const box = new THREE.Box3().setFromObject(root);
-      const size = new THREE.Vector3();
-      const center = new THREE.Vector3();
-      box.getSize(size);
-      box.getCenter(center);
-      const maxDim = Math.max(size.x, size.y, size.z, 1);
-      const dist = maxDim * 1.8;
-      camera.position.set(center.x + dist, center.y + dist * 0.8, center.z + dist);
-      controls.target.copy(center);
-      controls.update();
-    }
-
-    function objectHeight(root) {
-      if (!root) return 0;
-      const box = new THREE.Box3().setFromObject(root);
-      const h = box.max.y - box.min.y;
-      return Number.isFinite(h) && h > 0 ? h : 0;
-    }
-
-    function findHipsBone(bones) {
-      if (!bones?.length) return null;
-      return bones.find((b) => canonicalBoneKey(b.name) === "hips") || bones[0] || null;
-    }
-
-    function findFootLevelY(bones) {
-      if (!bones?.length) return null;
-      const footKeys = new Set(["leftFoot", "rightFoot", "leftToes", "rightToes"]);
-      const ys = [];
-      const p = new THREE.Vector3();
-      for (const bone of bones) {
-        const key = canonicalBoneKey(bone.name);
-        if (!footKeys.has(key)) continue;
-        bone.getWorldPosition(p);
-        ys.push(p.y);
-      }
-      if (!ys.length) return null;
-      return ys.reduce((a, b) => a + b, 0) / ys.length;
-    }
-
-    function computeHipsWorldError(sourceBones, targetBones) {
-      const sourceHips = findHipsBone(sourceBones);
-      const targetHips = findHipsBone(targetBones);
-      if (!sourceHips || !targetHips) return null;
-      sourceHips.getWorldPosition(_tmpWorldPosA);
-      targetHips.getWorldPosition(_tmpWorldPosB);
-      return _tmpWorldPosA.distanceTo(_tmpWorldPosB);
-    }
-
-    function getModelSkeletonRootBone() {
-      if (!modelSkinnedMesh?.skeleton?.bones?.length) return null;
-      let node = findHipsBone(modelSkinnedMesh.skeleton.bones) || modelSkinnedMesh.skeleton.bones[0];
-      while (node?.parent?.isBone) {
-        node = node.parent;
-      }
-      return node || null;
-    }
-
-    function applyWorldDeltaToObject(obj, deltaWorld) {
-      if (!obj || !deltaWorld || deltaWorld.lengthSq() < 1e-12) return;
-      if (!obj.parent) {
-        obj.position.add(deltaWorld);
-        return;
-      }
-      obj.getWorldPosition(_tmpWorldPosA);
-      _tmpWorldPosA.add(deltaWorld);
-      obj.parent.worldToLocal(_tmpWorldPosA);
-      obj.position.copy(_tmpWorldPosA);
-    }
-
-    function syncSourceDisplayToModel() {
-      if (!skeletonObj || !sourceResult?.skeleton?.bones?.length || !modelRoot || !modelSkinnedMesh?.skeleton?.bones?.length) {
-        return;
-      }
-      skeletonObj.position.set(0, 0, 0);
-      skeletonObj.scale.setScalar(1);
-      skeletonObj.updateMatrixWorld(true);
-      modelRoot.updateMatrixWorld(true);
-
-      const sourceH = objectHeight(skeletonObj);
-      const targetH = objectHeight(modelRoot);
-      if (sourceH > 1e-6 && targetH > 1e-6) {
-        const displayScale = Math.max(1e-6, Math.min(1e6, targetH / sourceH));
-        skeletonObj.scale.setScalar(displayScale);
-      }
-      skeletonObj.updateMatrixWorld(true);
-
-      const sourceHips = findHipsBone(sourceResult.skeleton.bones);
-      const targetHips = findHipsBone(modelSkinnedMesh.skeleton.bones);
-      if (sourceHips && targetHips) {
-        const src = new THREE.Vector3();
-        const dst = new THREE.Vector3();
-        sourceHips.getWorldPosition(src);
-        targetHips.getWorldPosition(dst);
-        skeletonObj.position.add(dst.sub(src));
-      }
-      skeletonObj.updateMatrixWorld(true);
-
-      // Second pass: align by feet level to compensate different hip pivot conventions.
-      const sourceFeetY = findFootLevelY(sourceResult.skeleton.bones);
-      const targetFeetY = findFootLevelY(modelSkinnedMesh.skeleton.bones);
-      if (Number.isFinite(sourceFeetY) && Number.isFinite(targetFeetY)) {
-        skeletonObj.position.y += targetFeetY - sourceFeetY;
-        skeletonObj.updateMatrixWorld(true);
-      }
-      let overlayYaw = 0;
-      if (sourceOverlay) {
-        // Keep source overlay in source coordinates by default; extra yaw is applied
-        // only in live-delta mode where explicit runtime correction is used.
-        overlayYaw = estimateFacingYawOffset(sourceResult.skeleton.bones, modelSkinnedMesh.skeleton.bones);
-        sourceOverlay.overlayYaw = 0;
-      }
-      diag("display-sync", {
-        sourceHeight: Number(sourceH.toFixed(4)),
-        targetHeight: Number(targetH.toFixed(4)),
-        displayScale: Number(skeletonObj.scale.y.toFixed(6)),
-        overlayYawDeg: Number((overlayYaw * 180 / Math.PI).toFixed(2)),
-      });
-      updateSourceOverlay();
-    }
-
-    function alignSourceHipsToModel(lockFeet = false) {
-      if (!skeletonObj || !sourceResult?.skeleton?.bones?.length || !modelRoot || !modelSkinnedMesh?.skeleton?.bones?.length) {
-        return;
-      }
-      skeletonObj.updateMatrixWorld(true);
-      modelRoot.updateMatrixWorld(true);
-      const sourceHips = findHipsBone(sourceResult.skeleton.bones);
-      const targetHips = findHipsBone(modelSkinnedMesh.skeleton.bones);
-      if (sourceHips && targetHips) {
-        const src = new THREE.Vector3();
-        const dst = new THREE.Vector3();
-        sourceHips.getWorldPosition(src);
-        targetHips.getWorldPosition(dst);
-        skeletonObj.position.add(dst.sub(src));
-      }
-      skeletonObj.updateMatrixWorld(true);
-      if (lockFeet) {
-        const sourceFeetY = findFootLevelY(sourceResult.skeleton.bones);
-        const targetFeetY = findFootLevelY(modelSkinnedMesh.skeleton.bones);
-        if (Number.isFinite(sourceFeetY) && Number.isFinite(targetFeetY)) {
-          skeletonObj.position.y += targetFeetY - sourceFeetY;
-          skeletonObj.updateMatrixWorld(true);
-        }
-      }
-    }
-
-    function alignModelHipsToSource(lockFeet = false) {
-      if (!skeletonObj || !sourceResult?.skeleton?.bones?.length || !modelRoot || !modelSkinnedMesh?.skeleton?.bones?.length) {
-        return null;
-      }
-      skeletonObj.updateMatrixWorld(true);
-      modelRoot.updateMatrixWorld(true);
-      const sourceHips = findHipsBone(sourceResult.skeleton.bones);
-      const targetHips = findHipsBone(modelSkinnedMesh.skeleton.bones);
-      if (!sourceHips || !targetHips) {
-        return { applied: false, target: "none", beforeErr: null, deltaX: 0, deltaY: 0, deltaZ: 0, lockFeet, hipsPosErr: null };
-      }
-      sourceHips.getWorldPosition(_tmpWorldPosA);
-      targetHips.getWorldPosition(_tmpWorldPosB);
-      _tmpWorldDelta.copy(_tmpWorldPosA).sub(_tmpWorldPosB);
-      const delta = _tmpWorldDelta.clone();
-      const beforeErrRaw = computeHipsWorldError(sourceResult.skeleton.bones, modelSkinnedMesh.skeleton.bones);
-      const beforeErr = Number.isFinite(beforeErrRaw) ? Number(beforeErrRaw.toFixed(5)) : null;
-      const candidates = [modelRoot, getModelSkeletonRootBone()].filter(
-        (node, idx, arr) => node && arr.findIndex((v) => v && v.uuid === node.uuid) === idx
-      );
-      let bestTarget = "none";
-      let bestErr = Number.POSITIVE_INFINITY;
-      for (const node of candidates) {
-        const prevPos = node.position.clone();
-        applyWorldDeltaToObject(node, delta);
-        modelRoot.updateMatrixWorld(true);
-        const err = computeHipsWorldError(sourceResult.skeleton.bones, modelSkinnedMesh.skeleton.bones);
-        const errNum = Number.isFinite(err) ? err : Number.POSITIVE_INFINITY;
-        if (errNum < bestErr) {
-          bestErr = errNum;
-          bestTarget = node === modelRoot ? "modelRoot" : "skeletonRootBone";
-        }
-        node.position.copy(prevPos);
-      }
-      if (bestTarget === "skeletonRootBone") {
-        const rootBone = getModelSkeletonRootBone();
-        if (rootBone) {
-          applyWorldDeltaToObject(rootBone, delta);
-        }
-      } else {
-        applyWorldDeltaToObject(modelRoot, delta);
-      }
-      modelRoot.updateMatrixWorld(true);
-      if (lockFeet) {
-        const sourceFeetY = findFootLevelY(sourceResult.skeleton.bones);
-        const targetFeetY = findFootLevelY(modelSkinnedMesh.skeleton.bones);
-        if (Number.isFinite(sourceFeetY) && Number.isFinite(targetFeetY)) {
-          modelRoot.position.y += sourceFeetY - targetFeetY;
-          modelRoot.updateMatrixWorld(true);
-        }
-      }
-      const hipsPosErrRaw = computeHipsWorldError(sourceResult.skeleton.bones, modelSkinnedMesh.skeleton.bones);
-      const hipsPosErr = Number.isFinite(hipsPosErrRaw) ? Number(hipsPosErrRaw.toFixed(5)) : null;
-      return {
-        applied: true,
-        target: bestTarget,
-        beforeErr,
-        deltaX: Number(delta.x.toFixed(5)),
-        deltaY: Number(delta.y.toFixed(5)),
-        deltaZ: Number(delta.z.toFixed(5)),
-        lockFeet,
-        hipsPosErr,
-      };
     }
 
     function getActiveDuration() {
@@ -2061,44 +982,6 @@
 
     function clipUsesBonesSyntax(clip) {
       return clip.tracks.some((t) => t.name.startsWith(".bones["));
-    }
-
-    function scoreSkinnedMesh(obj) {
-      const bonesCount = obj.skeleton?.bones?.length || 0;
-      const verts =
-        obj.geometry && obj.geometry.attributes && obj.geometry.attributes.position
-          ? obj.geometry.attributes.position.count
-          : 0;
-      const n = String(obj.name || "").toLowerCase();
-      let nameBias = 0;
-      if (/(body|torso|main|character)/.test(n)) {
-        nameBias += 300000000;
-      }
-      if (/(hair|bang|fringe|ponytail|skirt|cloth|cape|acc|accessory|weapon)/.test(n)) {
-        nameBias -= 200000000;
-      }
-      return bonesCount * 1000000 + verts + nameBias;
-    }
-
-    function findSkinnedMeshes(root) {
-      const found = [];
-      root.traverse((obj) => {
-        if (!(obj.isSkinnedMesh && obj.skeleton && obj.skeleton.bones?.length)) {
-          return;
-        }
-        found.push(obj);
-      });
-      found.sort((a, b) => scoreSkinnedMesh(b) - scoreSkinnedMesh(a));
-      return found;
-    }
-
-    function logModelBones(skinnedMeshes) {
-      const rows = collectModelBoneRows(skinnedMeshes).map((row, index) => ({ index, ...row }));
-      window.__vid2modelModelBones = rows;
-      if (String(window.__vid2modelDiagMode || "minimal").trim().toLowerCase() === "verbose") {
-        console.log("[vid2model/model-bones] total:", rows.length);
-        console.table(rows);
-      }
     }
 
     function getPrimaryChildDirectionLocal(bone, outDir) {
@@ -2380,386 +1263,6 @@
       });
     }
 
-    function inferHumanoidCanonicalNamesFromTopology(bones) {
-      const boneSet = new Set(bones);
-      const childrenMap = new Map();
-      for (const bone of bones) {
-        childrenMap.set(
-          bone,
-          bone.children.filter((c) => boneSet.has(c))
-        );
-      }
-
-      const worldPos = new Map();
-      for (const bone of bones) {
-        const p = new THREE.Vector3();
-        bone.getWorldPosition(p);
-        worldPos.set(bone, p);
-      }
-
-      const descendantCount = new Map();
-      const countDesc = (bone) => {
-        let total = 0;
-        for (const c of childrenMap.get(bone) || []) {
-          total += 1 + countDesc(c);
-        }
-        descendantCount.set(bone, total);
-        return total;
-      };
-      const roots = bones.filter((b) => !boneSet.has(b.parent));
-      for (const root of roots) {
-        countDesc(root);
-      }
-
-      const sortedRoots = (roots.length ? roots : [bones[0]]).slice().sort(
-        (a, b) => (descendantCount.get(b) || 0) - (descendantCount.get(a) || 0)
-      );
-      const hips = sortedRoots[0];
-      if (!hips) {
-        return new Map();
-      }
-
-      const assignment = new Map();
-      assignment.set(hips, "hips");
-
-      const getHighestYChild = (bone, exclude = new Set()) => {
-        const children = (childrenMap.get(bone) || []).filter((c) => !exclude.has(c));
-        if (!children.length) return null;
-        return children.slice().sort((a, b) => worldPos.get(b).y - worldPos.get(a).y)[0];
-      };
-      const getLowestYChild = (bone, exclude = new Set()) => {
-        const children = (childrenMap.get(bone) || []).filter((c) => !exclude.has(c));
-        if (!children.length) return null;
-        return children.slice().sort((a, b) => worldPos.get(a).y - worldPos.get(b).y)[0];
-      };
-      const xOf = (bone) => worldPos.get(bone)?.x ?? 0;
-
-      // Build vertical torso chain from hips upwards.
-      const torsoChain = [];
-      let cursor = getHighestYChild(hips);
-      while (cursor && torsoChain.length < 5) {
-        torsoChain.push(cursor);
-        const next = getHighestYChild(cursor);
-        if (!next) break;
-        if (worldPos.get(next).y < worldPos.get(cursor).y - 1e-4) break;
-        cursor = next;
-      }
-
-      const spine = torsoChain[0] || null;
-      const chest = torsoChain[1] || null;
-      let upperChest = null;
-      let neck = null;
-      let head = null;
-      if (torsoChain.length >= 5) {
-        upperChest = torsoChain[2];
-        neck = torsoChain[3];
-        head = torsoChain[4];
-      } else if (torsoChain.length === 4) {
-        neck = torsoChain[2];
-        head = torsoChain[3];
-      } else if (torsoChain.length === 3) {
-        neck = torsoChain[2];
-      }
-
-      if (spine) assignment.set(spine, "spine");
-      if (chest) assignment.set(chest, "chest");
-      if (upperChest) assignment.set(upperChest, "upperChest");
-      if (neck) assignment.set(neck, "neck");
-      if (head) assignment.set(head, "head");
-
-      const torsoSet = new Set([hips, ...torsoChain].filter(Boolean));
-      const hipsChildren = childrenMap.get(hips) || [];
-      const legRoots = hipsChildren
-        .filter((c) => !torsoSet.has(c))
-        .slice()
-        .sort((a, b) => worldPos.get(a).y - worldPos.get(b).y)
-        .slice(0, 2);
-
-      const assignLeg = (rootBone, side) => {
-        if (!rootBone) return;
-        assignment.set(rootBone, `${side}UpperLeg`);
-        const lower = getLowestYChild(rootBone);
-        if (lower) assignment.set(lower, `${side}LowerLeg`);
-        const foot = lower ? getLowestYChild(lower) : null;
-        if (foot) assignment.set(foot, `${side}Foot`);
-        const toes = foot ? getLowestYChild(foot) : null;
-        if (toes) assignment.set(toes, `${side}Toes`);
-      };
-
-      if (legRoots.length === 2) {
-        const [a, b] = legRoots;
-        const leftRoot = xOf(a) <= xOf(b) ? a : b;
-        const rightRoot = leftRoot === a ? b : a;
-        assignLeg(leftRoot, "left");
-        assignLeg(rightRoot, "right");
-      } else if (legRoots.length === 1) {
-        const side = xOf(legRoots[0]) < xOf(hips) ? "left" : "right";
-        assignLeg(legRoots[0], side);
-      }
-
-      const shoulderBase = upperChest || chest || spine || hips;
-      const shoulderBaseChildren = shoulderBase ? (childrenMap.get(shoulderBase) || []) : [];
-      const upFromShoulderBase = shoulderBase ? getHighestYChild(shoulderBase) : null;
-      let armRoots = shoulderBaseChildren.filter((c) => c !== upFromShoulderBase);
-
-      if (armRoots.length < 2 && chest && shoulderBase !== chest) {
-        const chestChildren = childrenMap.get(chest) || [];
-        const chestUp = getHighestYChild(chest);
-        const extra = chestChildren.filter((c) => c !== chestUp);
-        armRoots = [...new Set([...armRoots, ...extra])];
-      }
-
-      armRoots = armRoots
-        .filter((c) => !assignment.has(c))
-        .slice()
-        .sort((a, b) => Math.abs(xOf(b) - xOf(hips)) - Math.abs(xOf(a) - xOf(hips)))
-        .slice(0, 2);
-
-      const assignArm = (rootBone, side) => {
-        if (!rootBone) return;
-        const c1 = (childrenMap.get(rootBone) || []).slice().sort(
-          (a, b) => Math.abs(xOf(b) - xOf(hips)) - Math.abs(xOf(a) - xOf(hips))
-        )[0] || null;
-        const c2 = c1
-          ? (childrenMap.get(c1) || []).slice().sort(
-              (a, b) => Math.abs(xOf(b) - xOf(hips)) - Math.abs(xOf(a) - xOf(hips))
-            )[0] || null
-          : null;
-        const c3 = c2
-          ? (childrenMap.get(c2) || []).slice().sort(
-              (a, b) => Math.abs(xOf(b) - xOf(hips)) - Math.abs(xOf(a) - xOf(hips))
-            )[0] || null
-          : null;
-
-        if (c1 && c2 && c3) {
-          assignment.set(rootBone, `${side}Shoulder`);
-          assignment.set(c1, `${side}UpperArm`);
-          assignment.set(c2, `${side}LowerArm`);
-          assignment.set(c3, `${side}Hand`);
-        } else if (c1 && c2) {
-          assignment.set(rootBone, `${side}UpperArm`);
-          assignment.set(c1, `${side}LowerArm`);
-          assignment.set(c2, `${side}Hand`);
-        } else if (c1) {
-          assignment.set(rootBone, `${side}UpperArm`);
-          assignment.set(c1, `${side}LowerArm`);
-        }
-      };
-
-      if (armRoots.length === 2) {
-        const [a, b] = armRoots;
-        const leftRoot = xOf(a) <= xOf(b) ? a : b;
-        const rightRoot = leftRoot === a ? b : a;
-        assignArm(leftRoot, "left");
-        assignArm(rightRoot, "right");
-      } else if (armRoots.length === 1) {
-        const side = xOf(armRoots[0]) < xOf(hips) ? "left" : "right";
-        assignArm(armRoots[0], side);
-      }
-
-      return assignment;
-    }
-
-    function autoNameTargetBones(skinnedMesh) {
-      const bones = skinnedMesh?.skeleton?.bones || [];
-      if (!bones.length) {
-        return { missingBefore: 0, autoNamed: 0, inferredCanonical: 0 };
-      }
-
-      let missingBefore = 0;
-      for (const bone of bones) {
-        if (!bone.name || !bone.name.trim()) {
-          missingBefore += 1;
-        }
-      }
-
-      let autoNamed = 0;
-      const usedNames = new Set();
-      for (const bone of bones) {
-        const n = (bone.name || "").trim();
-        if (n) usedNames.add(n);
-      }
-
-      for (let i = 0; i < bones.length; i += 1) {
-        const bone = bones[i];
-        if (!bone.name || !bone.name.trim()) {
-          let generated = `autoBone_${String(i).padStart(3, "0")}`;
-          while (usedNames.has(generated)) {
-            generated = `${generated}_x`;
-          }
-          bone.name = generated;
-          usedNames.add(generated);
-          autoNamed += 1;
-        }
-      }
-
-      let inferredCanonical = 0;
-      if (missingBefore > 0) {
-        skinnedMesh.updateMatrixWorld(true);
-        const inferred = inferHumanoidCanonicalNamesFromTopology(bones);
-        for (const [bone, canonical] of inferred.entries()) {
-          if (!canonical) continue;
-          if (usedNames.has(canonical) && bone.name !== canonical) continue;
-          if (bone.name !== canonical) {
-            usedNames.delete(bone.name);
-            bone.name = canonical;
-            usedNames.add(canonical);
-            inferredCanonical += 1;
-          }
-        }
-      }
-
-      return { missingBefore, autoNamed, inferredCanonical };
-    }
-
-    function isLowMatchRetargetMap(result, sourceTotal) {
-      const targetCoverage = result.canonicalCandidates > 0 ? result.matched / result.canonicalCandidates : 0;
-      const sourceCoverage = sourceTotal > 0 ? result.sourceMatched / sourceTotal : 0;
-      return (
-        result.canonicalCandidates === 0 ||
-        targetCoverage < 0.75 ||
-        (targetCoverage < 0.9 && sourceCoverage < 0.35)
-      );
-    }
-
-    function isRetargetMapBetter(candidate, baseline) {
-      if (!candidate) return false;
-      if (!baseline) return true;
-      if (candidate.matched !== baseline.matched) return candidate.matched > baseline.matched;
-      if (candidate.sourceMatched !== baseline.sourceMatched) return candidate.sourceMatched > baseline.sourceMatched;
-      return Object.keys(candidate.names || {}).length > Object.keys(baseline.names || {}).length;
-    }
-
-    function buildTopologyFallbackRenamePlan(skinnedMesh, baseResult, canonicalFilter) {
-      const bones = skinnedMesh?.skeleton?.bones || [];
-      if (!bones.length) return null;
-
-      skinnedMesh.updateMatrixWorld(true);
-      const inferred = inferHumanoidCanonicalNamesFromTopology(bones);
-      if (!inferred.size) return null;
-
-      const reservedCanonical = new Set();
-      for (const targetName of Object.keys(baseResult?.names || {})) {
-        const canonical = canonicalBoneKey(targetName);
-        if (canonical) reservedCanonical.add(canonical);
-      }
-
-      const reservedNames = new Set(
-        bones
-          .map((bone) => String(bone?.name || "").trim())
-          .filter((name) => !!name)
-      );
-
-      const plan = [];
-      for (const [bone, canonical] of inferred.entries()) {
-        if (!canonical) continue;
-        if (canonicalFilter && !canonicalFilter.has(canonical)) continue;
-        if (baseResult?.names?.[bone.name]) continue;
-
-        const currentCanonical = canonicalBoneKey(bone.name);
-        if (currentCanonical === canonical) continue;
-        if (reservedCanonical.has(canonical)) continue;
-        if (reservedNames.has(canonical) && bone.name !== canonical) continue;
-
-        plan.push({
-          bone,
-          from: bone.name,
-          to: canonical,
-          previousCanonical: currentCanonical || null,
-        });
-        reservedCanonical.add(canonical);
-        reservedNames.delete(bone.name);
-        reservedNames.add(canonical);
-      }
-
-      if (!plan.length) return null;
-      return {
-        plan,
-        sample: plan.slice(0, 12).map((row) => ({
-          from: row.from,
-          to: row.to,
-          previousCanonical: row.previousCanonical,
-        })),
-      };
-    }
-
-    function applyBoneRenamePlan(plan) {
-      for (const row of plan || []) {
-        row.bone.name = row.to;
-      }
-    }
-
-    function revertBoneRenamePlan(plan) {
-      for (const row of plan || []) {
-        row.bone.name = row.from;
-      }
-    }
-
-    function maybeApplyTopologyFallback(skinnedMesh, sourceBones, canonicalFilter, baseResult) {
-      const sourceTotal = sourceBones?.length || 0;
-      const shouldTry = isLowMatchRetargetMap(baseResult, sourceTotal);
-      const baseMappedPairs = Object.keys(baseResult?.names || {}).length;
-      const baseTargetCoverage =
-        baseResult?.canonicalCandidates > 0 ? baseResult.matched / baseResult.canonicalCandidates : 0;
-      const baseSourceCoverage = sourceTotal > 0 ? baseResult.sourceMatched / sourceTotal : 0;
-
-      if (!shouldTry) {
-        return {
-          result: baseResult,
-          attempted: false,
-          applied: false,
-          reason: "coverage-ok",
-        };
-      }
-
-      const renameInfo = buildTopologyFallbackRenamePlan(skinnedMesh, baseResult, canonicalFilter);
-      if (!renameInfo?.plan?.length) {
-        return {
-          result: baseResult,
-          attempted: true,
-          applied: false,
-          reason: "no-inferred-renames",
-          before: {
-            mappedPairs: baseMappedPairs,
-            targetCoverage: Number(baseTargetCoverage.toFixed(4)),
-            sourceCoverage: Number(baseSourceCoverage.toFixed(4)),
-          },
-        };
-      }
-
-      applyBoneRenamePlan(renameInfo.plan);
-      const topologyResult = buildRetargetMap(skinnedMesh.skeleton.bones, sourceBones, { canonicalFilter });
-      const topologyMappedPairs = Object.keys(topologyResult.names || {}).length;
-      const topologyTargetCoverage =
-        topologyResult.canonicalCandidates > 0 ? topologyResult.matched / topologyResult.canonicalCandidates : 0;
-      const topologySourceCoverage =
-        sourceTotal > 0 ? topologyResult.sourceMatched / sourceTotal : 0;
-      const better = isRetargetMapBetter(topologyResult, baseResult);
-
-      if (!better) {
-        revertBoneRenamePlan(renameInfo.plan);
-      }
-
-      return {
-        result: better ? topologyResult : baseResult,
-        attempted: true,
-        applied: better,
-        reason: better ? "improved-coverage" : "not-better",
-        inferredRenames: renameInfo.plan.length,
-        sample: renameInfo.sample,
-        before: {
-          mappedPairs: baseMappedPairs,
-          targetCoverage: Number(baseTargetCoverage.toFixed(4)),
-          sourceCoverage: Number(baseSourceCoverage.toFixed(4)),
-        },
-        after: {
-          mappedPairs: topologyMappedPairs,
-          targetCoverage: Number(topologyTargetCoverage.toFixed(4)),
-          sourceCoverage: Number(topologySourceCoverage.toFixed(4)),
-        },
-      };
-    }
-
     function applyBvhToModel() {
       if (!sourceResult) {
         setStatus("Load BVH first.");
@@ -2908,83 +1411,22 @@
           sample: topologyFallback.sample || [],
         });
 
-        const retargetAttempts = [];
-        const attemptDebug = [];
-        const pushAttempt = (label, bindingRoot, fn) => {
-          try {
-            const candidate = fn();
-            if (candidate && candidate.tracks && candidate.tracks.length > 0) {
-              const resolvedTracks =
-                bindingRoot === "skinned"
-                  ? resolvedTrackCountAcrossMeshes(candidate, modelSkinnedMeshes)
-                  : resolvedTrackCountForTarget(candidate, modelSkinnedMesh.skeleton.bones);
-              retargetAttempts.push({ label, clip: candidate, bindingRoot, resolvedTracks });
-              attemptDebug.push({
-                label,
-                bindingRoot,
-                tracks: candidate.tracks.length,
-                resolvedTracks,
-                ok: true,
-                error: "",
-              });
-            } else {
-              attemptDebug.push({ label, bindingRoot, tracks: 0, resolvedTracks: 0, ok: false, error: "empty clip" });
-            }
-          } catch (err) {
-            attemptDebug.push({
-              label,
-              bindingRoot,
-              tracks: 0,
-              resolvedTracks: 0,
-              ok: false,
-              error: shortErr(err),
-            });
-          }
-        };
-
-        pushAttempt("skeletonutils-skinnedmesh", "skinned", () =>
-          SkeletonUtils.retargetClip(modelSkinnedMesh, sourceResult.skeleton, activeStageClip, {
-            names,
-            hip: "hips",
-            useFirstFramePosition: true,
-            preserveBonePositions: false,
-          })
-        );
-        const namesSourceToTarget = Object.fromEntries(Object.entries(names).map(([target, source]) => [source, target]));
-        pushAttempt("skeletonutils-skinnedmesh-reversed", "skinned", () =>
-          SkeletonUtils.retargetClip(modelSkinnedMesh, sourceResult.skeleton, activeStageClip, {
-            names: namesSourceToTarget,
-            hip: "hips",
-            useFirstFramePosition: true,
-            preserveBonePositions: false,
-          })
-        );
-        if (modelRoot) {
-          pushAttempt("skeletonutils-root", "root", () =>
-            SkeletonUtils.retargetClip(modelRoot, sourceResult.skeleton, activeStageClip, {
-              names,
-              hip: "hips",
-              useFirstFramePosition: true,
-              preserveBonePositions: false,
-            })
-          );
-          pushAttempt("skeletonutils-root-reversed", "root", () =>
-            SkeletonUtils.retargetClip(modelRoot, sourceResult.skeleton, activeStageClip, {
-              names: namesSourceToTarget,
-              hip: "hips",
-              useFirstFramePosition: true,
-              preserveBonePositions: false,
-            })
-          );
-        }
-
-        const sourceRootBoneName = sourceResult.skeleton.bones?.[0]?.name || "hips";
-        pushAttempt("rename-fallback-bones", "skinned", () =>
-          buildRenamedClip(activeStageClip, names, sourceRootBoneName, "bones")
-        );
-        pushAttempt("rename-fallback-object", "root", () =>
-          buildRenamedClip(activeStageClip, names, sourceRootBoneName, "object")
-        );
+        const {
+          retargetAttempts,
+          attemptDebug,
+        } = collectRetargetAttempts({
+          modelSkinnedMesh,
+          modelSkinnedMeshes,
+          modelRoot,
+          sourceResult,
+          activeStageClip,
+          names,
+          SkeletonUtils,
+          buildRenamedClip,
+          resolvedTrackCountAcrossMeshes,
+          resolvedTrackCountForTarget,
+          shortErr,
+        });
 
         modelMixers = [];
         modelActions = [];
@@ -2999,217 +1441,37 @@
           return;
         }
 
-        const rankedAttempts = [...retargetAttempts].sort((a, b) => {
-          if (b.resolvedTracks !== a.resolvedTracks) return b.resolvedTracks - a.resolvedTracks;
-          return b.clip.tracks.length - a.clip.tracks.length;
+        let {
+          selectedAttempt,
+          selectedBindings,
+          selectedProbe,
+          selectedPoseError,
+          selectionDebug,
+          preferredMode,
+        } = selectRetargetAttempt({
+          retargetAttempts,
+          cachedRigProfile,
+          preferSkeletonOnRenameFallback,
+          modelSkinnedMeshes,
+          modelRoot,
+          modelSkinnedMesh,
+          retargetTargetBones,
+          sourceResult,
+          mixer,
+          buildBindingsForAttempt,
+          clipUsesBonesSyntax,
+          resolvedTrackCountForTarget,
+          probeMotionForBindings,
+          computePoseMatchError,
+          buildCanonicalBoneMap,
+          canonicalPoseSignature,
+          attemptPriority,
         });
-        const primaryAttempt = rankedAttempts[0];
-        const skeletonSkinned = rankedAttempts.find((a) => a.label === "skeletonutils-skinnedmesh");
-        const skeletonSkinnedReversed = rankedAttempts.find((a) => a.label === "skeletonutils-skinnedmesh-reversed");
-        const fallbackObject = rankedAttempts.find((a) => a.label === "rename-fallback-object");
-        const fallbackBones = rankedAttempts.find((a) => a.label === "rename-fallback-bones");
-        const candidateAttempts = [
-          primaryAttempt,
-          skeletonSkinned,
-          skeletonSkinnedReversed,
-          fallbackObject,
-          fallbackBones,
-        ].filter(
-          (a, i, arr) => a && arr.findIndex((b) => b && b.label === a.label) === i
-        );
-
-        const selectionDebug = [];
-        let selectedAttempt = null;
-        let selectedBindings = null;
-        let selectedProbe = null;
-        let selectedPoseError = Number.POSITIVE_INFINITY;
-        for (const attempt of candidateAttempts) {
-          const bindings = buildBindingsForAttempt({
-            attempt,
-            clip: attempt.clip,
-            modelSkinnedMeshes,
-            modelRoot,
-            modelSkinnedMesh,
-            clipUsesBonesSyntax,
-            resolvedTrackCountForTarget,
-          });
-          if (!bindings.mixers.length) {
-            selectionDebug.push({
-              label: attempt.label,
-              bindingRoot: attempt.bindingRoot,
-              tracks: attempt.clip.tracks.length,
-              resolvedTracks: attempt.resolvedTracks,
-              mixers: 0,
-              probeAngle: 0,
-              probePos: 0,
-              probeScore: 0,
-              sampleTime: 0,
-              poseError: Number.POSITIVE_INFINITY,
-              ok: false,
-            });
-            continue;
-          }
-          const probe = probeMotionForBindings({
-            bindings,
-            clip: attempt.clip,
-            modelSkinnedMesh,
-            modelRoot,
-            targetBones: retargetTargetBones,
-          });
-          const poseError = computePoseMatchError({
-            bindings,
-            sampleTime: probe.sampleTime,
-            modelSkinnedMesh,
-            targetBones: retargetTargetBones,
-            sourceResult,
-            mixer,
-            modelRoot,
-            buildCanonicalBoneMap,
-            canonicalPoseSignature,
-          });
-          selectionDebug.push({
-            label: attempt.label,
-            bindingRoot: attempt.bindingRoot,
-            tracks: attempt.clip.tracks.length,
-            resolvedTracks: attempt.resolvedTracks,
-            mixers: bindings.mixers.length,
-            probeAngle: Number(probe.maxAngle.toFixed(6)),
-            probePos: Number(probe.maxPos.toFixed(6)),
-            probeScore: Number(probe.score.toFixed(6)),
-            sampleTime: Number(probe.sampleTime.toFixed(3)),
-            poseError: Number.isFinite(poseError) ? Number(poseError.toFixed(6)) : Number.POSITIVE_INFINITY,
-            ok: true,
-          });
-
-          const better = (() => {
-            if (!selectedAttempt) return true;
-            const resolvedDiff = attempt.resolvedTracks - selectedAttempt.resolvedTracks;
-            if (resolvedDiff > 2) return true;
-            if (resolvedDiff < -2) return false;
-            const poseDiff = selectedPoseError - poseError; // lower poseError is better
-            if (Number.isFinite(poseDiff) && Math.abs(poseDiff) > 1e-4) {
-              return poseDiff > 0;
-            }
-            const priorityDiff = attemptPriority(attempt.label) - attemptPriority(selectedAttempt.label);
-            if (priorityDiff > 0) return true;
-            if (priorityDiff < 0) return false;
-            return probe.score > selectedProbe.score + 1e-7;
-          })();
-          if (better) {
-            selectedAttempt = attempt;
-            selectedBindings = bindings;
-            selectedProbe = probe;
-            selectedPoseError = poseError;
-          }
-        }
 
         if (!selectedBindings || !selectedBindings.mixers.length) {
           setStatus("Retarget failed: clip has no resolved tracks on model skeleton.");
           diag("retarget-fail", { reason: "no_resolved_tracks", stage: retargetStage });
           return;
-        }
-
-        const preferredMode = String(cachedRigProfile?.preferredMode || "").trim();
-        if (preferredMode) {
-          const preferredAttempt = candidateAttempts.find((attempt) => attempt?.label === preferredMode) || null;
-          if (preferredAttempt && preferredAttempt.label !== selectedAttempt?.label) {
-            const preferredBindings = buildBindingsForAttempt({
-              attempt: preferredAttempt,
-              clip: preferredAttempt.clip,
-              modelSkinnedMeshes,
-              modelRoot,
-              modelSkinnedMesh,
-              clipUsesBonesSyntax,
-              resolvedTrackCountForTarget,
-            });
-            if (preferredBindings.mixers.length) {
-              const preferredProbe = probeMotionForBindings({
-                bindings: preferredBindings,
-                clip: preferredAttempt.clip,
-                modelSkinnedMesh,
-                modelRoot,
-                targetBones: retargetTargetBones,
-              });
-              const preferredPoseError = computePoseMatchError({
-                bindings: preferredBindings,
-                sampleTime: preferredProbe.sampleTime,
-                modelSkinnedMesh,
-                targetBones: retargetTargetBones,
-                sourceResult,
-                mixer,
-                modelRoot,
-                buildCanonicalBoneMap,
-                canonicalPoseSignature,
-              });
-              selectionDebug.push({
-                label: preferredAttempt.label,
-                bindingRoot: preferredAttempt.bindingRoot,
-                tracks: preferredAttempt.clip.tracks.length,
-                resolvedTracks: preferredAttempt.resolvedTracks,
-                mixers: preferredBindings.mixers.length,
-                probeAngle: Number(preferredProbe.maxAngle.toFixed(6)),
-                probePos: Number(preferredProbe.maxPos.toFixed(6)),
-                probeScore: Number(preferredProbe.score.toFixed(6)),
-                sampleTime: Number(preferredProbe.sampleTime.toFixed(3)),
-                poseError: Number.isFinite(preferredPoseError)
-                  ? Number(preferredPoseError.toFixed(6))
-                  : Number.POSITIVE_INFINITY,
-                ok: true,
-                forcedByProfile: true,
-              });
-              selectedAttempt = preferredAttempt;
-              selectedBindings = preferredBindings;
-              selectedProbe = preferredProbe;
-              selectedPoseError = preferredPoseError;
-            }
-          }
-        }
-
-        if (
-          preferSkeletonOnRenameFallback &&
-          selectedAttempt?.label?.startsWith("rename-fallback") &&
-          skeletonSkinned
-        ) {
-          const skeletonBindings = buildBindingsForAttempt({
-            attempt: skeletonSkinned,
-            clip: skeletonSkinned.clip,
-            modelSkinnedMeshes,
-            modelRoot,
-            modelSkinnedMesh,
-            clipUsesBonesSyntax,
-            resolvedTrackCountForTarget,
-          });
-          if (skeletonBindings.mixers.length) {
-            const skeletonProbe = probeMotionForBindings({
-              bindings: skeletonBindings,
-              clip: skeletonSkinned.clip,
-              modelSkinnedMesh,
-              modelRoot,
-              targetBones: retargetTargetBones,
-            });
-            const skeletonPoseError = computePoseMatchError({
-              bindings: skeletonBindings,
-              sampleTime: skeletonProbe.sampleTime,
-              modelSkinnedMesh,
-              targetBones: retargetTargetBones,
-              sourceResult,
-              mixer,
-              modelRoot,
-              buildCanonicalBoneMap,
-              canonicalPoseSignature,
-            });
-            const resolvedGap = selectedAttempt.resolvedTracks - skeletonSkinned.resolvedTracks;
-            const poseGap = skeletonPoseError - selectedPoseError;
-            const shouldPreferSkeleton =
-              resolvedGap <= 2 &&
-              (!Number.isFinite(skeletonPoseError) || !Number.isFinite(selectedPoseError) || poseGap <= 0.35);
-            if (shouldPreferSkeleton) {
-              selectedAttempt = skeletonSkinned;
-              selectedBindings = skeletonBindings;
-              selectedProbe = skeletonProbe;
-              selectedPoseError = skeletonPoseError;
-            }
-          }
         }
 
         modelMixers = selectedBindings.mixers;
@@ -3316,7 +1578,7 @@
               collectAlignmentDiagnostics: (args) =>
                 collectAlignmentDiagnostics({
                   ...args,
-                  sourceOverlay,
+                  sourceOverlay: getSourceOverlay(),
                   overlayUpAxis: _overlayUpAxis,
                 }),
             });
@@ -3333,8 +1595,8 @@
               );
             rootYawCorrection = applyModelRootYaw(shouldUseBest ? yawEval.bestYaw : 0);
           }
-          if (sourceOverlay) {
-            sourceOverlay.overlayYaw = 0;
+          if (hasSourceOverlay()) {
+            setSourceOverlayYaw(0);
             updateSourceOverlay();
           }
           const hipsYawError = computeHipsYawError(
@@ -3367,7 +1629,7 @@
               collectAlignmentDiagnostics: (args) =>
                 collectAlignmentDiagnostics({
                   ...args,
-                  sourceOverlay,
+                  sourceOverlay: getSourceOverlay(),
                   overlayUpAxis: _overlayUpAxis,
                 }),
             });
@@ -3383,8 +1645,8 @@
               hipsYawCorrection = -hipsYawError;
               rootYawCorrection = applyModelRootYaw(correctedYaw);
               hipsCorrectionApplied = true;
-              if (sourceOverlay) {
-                sourceOverlay.overlayYaw = 0;
+              if (hasSourceOverlay()) {
+                setSourceOverlayYaw(0);
                 updateSourceOverlay();
               }
             }
@@ -3428,9 +1690,9 @@
           const livePlan = rebuildLiveRetargetPlan();
           if (livePlan && livePlan.pairs.length > 0) {
             liveRetarget = livePlan;
-            if (sourceOverlay) {
+            if (hasSourceOverlay()) {
               const effectiveOverlayYaw = rawFacingYaw + liveRetarget.yawOffset;
-              sourceOverlay.overlayYaw = Number.isFinite(effectiveOverlayYaw) ? effectiveOverlayYaw : 0;
+              setSourceOverlayYaw(effectiveOverlayYaw);
               updateSourceOverlay();
             }
             applyLiveRetargetPose(liveRetarget);
@@ -3471,7 +1733,7 @@
               sourceClip: clip,
               maxRows: 5,
               overlayYawOverride: 0,
-              sourceOverlay,
+              sourceOverlay: getSourceOverlay(),
               overlayUpAxis: _overlayUpAxis,
             });
             return Number.isFinite(report?.avgPosErrNorm) ? report.avgPosErrNorm : report?.avgPosErr;
@@ -3505,9 +1767,9 @@
             const rebuiltLiveRetarget = rebuildLiveRetargetPlan();
             if (rebuiltLiveRetarget?.pairs?.length) {
               liveRetarget = rebuiltLiveRetarget;
-              if (sourceOverlay) {
+              if (hasSourceOverlay()) {
                 const effectiveOverlayYaw = rawFacingYaw + liveRetarget.yawOffset;
-                sourceOverlay.overlayYaw = Number.isFinite(effectiveOverlayYaw) ? effectiveOverlayYaw : 0;
+                setSourceOverlayYaw(effectiveOverlayYaw);
                 updateSourceOverlay();
               }
               applyLiveRetargetPose(liveRetarget);
@@ -3522,9 +1784,9 @@
             if (!keepCalibration) {
               resetBoneLengthCalibration(filteredBodyCalibration, modelRoot);
               liveRetarget = previousLiveRetarget;
-              if (sourceOverlay) {
+              if (hasSourceOverlay()) {
                 const effectiveOverlayYaw = rawFacingYaw + liveRetarget.yawOffset;
-                sourceOverlay.overlayYaw = Number.isFinite(effectiveOverlayYaw) ? effectiveOverlayYaw : 0;
+                setSourceOverlayYaw(effectiveOverlayYaw);
                 updateSourceOverlay();
               }
               applyLiveRetargetPose(liveRetarget);
@@ -3592,7 +1854,7 @@
               sourceClip: clip,
               maxRows: 5,
               overlayYawOverride: 0,
-              sourceOverlay,
+              sourceOverlay: getSourceOverlay(),
               overlayUpAxis: _overlayUpAxis,
             });
             return Number.isFinite(report?.avgPosErrNorm) ? report.avgPosErrNorm : report?.avgPosErr;
@@ -3766,7 +2028,7 @@
           sourceClip: clip,
           maxRows: 5,
           overlayYawOverride: 0,
-          sourceOverlay,
+          sourceOverlay: getSourceOverlay(),
           overlayUpAxis: _overlayUpAxis,
         });
         const postRetargetPoseError =
@@ -3783,7 +2045,7 @@
           sourceClip: clip,
           maxRows: 5,
           overlayYawOverride: 0,
-          sourceOverlay,
+          sourceOverlay: getSourceOverlay(),
           overlayUpAxis: _overlayUpAxis,
         });
         const lowerBodyPostError =
@@ -3807,38 +2069,9 @@
         }
         const candidateInfo = canonicalCandidates > 0 ? `, humanoid targets ${matched}/${canonicalCandidates}` : "";
         const activeMeshCount = liveRetarget ? liveRetarget.uniqueSkeletons.length : modelMixers.length;
-        const limbDiag = collectLimbDiagnostics(
-          retargetTargetBones,
-          sourceResult.skeleton.bones,
-          names,
-          clip
-        );
         setStatus(
           `Model retargeted [${retargetStage}] (source ${sourceMatched}/${sourceTotal}${candidateInfo}, all ${matched}/${total}, tracks ${clip.tracks.length}, mode ${selectedModeLabel}, active meshes ${activeMeshCount}).${lowMatch}`
         );
-        const unmatched = unmatchedHumanoid.slice(0, 6);
-        window.__vid2modelDebug = {
-          stage: retargetStage,
-          names,
-          sourceBones: sourceResult.skeleton.bones.map((b) => b.name),
-          targetBones: retargetTargetBones.map((b) => b.name),
-          clipTracks: clip.tracks.map((t) => t.name),
-          attemptDebug,
-          bestMode: selectedModeLabel,
-          selectionDebug,
-          motionProbe: selectedProbe,
-          poseError: selectedPoseError,
-          liveRetarget: liveRetarget
-            ? {
-                pairs: liveRetarget.pairs.length,
-                skeletons: liveRetarget.uniqueSkeletons.length,
-                posScale: liveRetarget.posScale,
-                calibratedPairs: liveRetarget.calibratedPairs || 0,
-                yawOffsetDeg: Number((liveRetarget.yawOffset * 180 / Math.PI).toFixed(2)),
-              }
-            : null,
-          activeMeshCount,
-        };
         if (Number.isFinite(postRetargetPoseError) && postRetargetPoseError <= 0.75) {
           rigProfileSaved = saveRigProfile({
             modelLabel,
@@ -3854,117 +2087,35 @@
         const unmatchedTargetBones = retargetTargetBones
           .map((b) => b.name)
           .filter((name) => !names[name]);
-        window.__vid2modelUnmatchedTargetBones = unmatchedTargetBones;
-        diag("retarget-map-details", {
-          stage: retargetStage,
-          totalTargetBones: retargetTargetBones.length,
-          mappedTargetBones: retargetTargetBones.length - unmatchedTargetBones.length,
-          unmappedTargetBones: unmatchedTargetBones.length,
-          sample: unmatchedTargetBones.slice(0, 20),
-        });
-        diag("retarget-result", {
-          stage: retargetStage,
-          mode: selectedModeLabel,
-          tracks: clip.tracks.length,
-          resolvedTracks: selectedAttempt.resolvedTracks,
-          activeMeshes: activeMeshCount,
-          motionProbe: selectedProbe
-            ? {
-                sampleTime: Number(selectedProbe.sampleTime.toFixed(3)),
-                maxAngle: Number(selectedProbe.maxAngle.toFixed(6)),
-                maxPos: Number(selectedProbe.maxPos.toFixed(6)),
-                score: Number(selectedProbe.score.toFixed(6)),
-              }
-            : null,
-          poseError: Number.isFinite(selectedPoseError) ? Number(selectedPoseError.toFixed(6)) : null,
-          liveRetarget: liveRetarget
-            ? {
-                pairs: liveRetarget.pairs.length,
-                skeletons: liveRetarget.uniqueSkeletons.length,
-                posScale: Number(liveRetarget.posScale.toFixed(6)),
-                calibratedPairs: liveRetarget.calibratedPairs || 0,
-                yawOffsetDeg: Number((liveRetarget.yawOffset * 180 / Math.PI).toFixed(2)),
-              }
-            : null,
-          unmatched,
-        });
-        diag("retarget-summary", {
-          stage: retargetStage,
-          mode: selectedModeLabel,
+        publishRetargetDiagnostics({
+          retargetStage,
+          names,
+          sourceBones: sourceResult.skeleton.bones,
+          targetBones: retargetTargetBones,
+          clip,
+          selectedAttempt,
+          selectedModeLabel,
+          selectedProbe,
+          selectedPoseError,
+          liveRetarget,
+          activeMeshCount,
+          attemptDebug,
+          selectionDebug,
+          cachedRigProfile,
+          rigProfileSaved,
           mappedPairs,
           sourceMatched,
-          sourceTotal,
-          humanoidMatched: canonicalCandidates > 0 ? `${matched}/${canonicalCandidates}` : "n/a",
-          tracks: clip.tracks.length,
-          resolvedTracks: selectedAttempt.resolvedTracks,
-          poseError: Number.isFinite(selectedPoseError) ? Number(selectedPoseError.toFixed(4)) : null,
-          postPoseError: Number.isFinite(postRetargetPoseError) ? Number(postRetargetPoseError.toFixed(4)) : null,
-          lowerBodyPostError: Number.isFinite(lowerBodyPostError) ? Number(lowerBodyPostError.toFixed(4)) : null,
-          lowerBodyRotError: Number.isFinite(lowerBodyRotError) ? Number(lowerBodyRotError.toFixed(2)) : null,
-          rootYawDeg: Number((rootYawCorrection * 180 / Math.PI).toFixed(2)),
-          yawOffsetDeg: liveRetarget ? Number((liveRetarget.yawOffset * 180 / Math.PI).toFixed(2)) : 0,
-          calibratedPairs: liveRetarget ? liveRetarget.calibratedPairs || 0 : 0,
-          rigProfile: cachedRigProfile ? (cachedRigProfile.source || "hit") : "miss",
-          rigProfileSaved,
-          liveDelta: !!liveRetarget,
-        });
-        dumpRestCorrectionLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
-        buildLegChainDiagnostics({
-          reason: `stage=${retargetStage} mode=${selectedModeLabel}`,
-          targetBones: retargetTargetBones,
-          sourceBones: sourceResult?.skeleton?.bones || [],
-          names: window.__vid2modelDebug?.names || {},
-        });
-        dumpLegChainDiagLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
-        buildArmChainDiagnostics({
-          reason: `stage=${retargetStage} mode=${selectedModeLabel}`,
-          targetBones: retargetTargetBones,
-          sourceBones: sourceResult?.skeleton?.bones || [],
-          names: window.__vid2modelDebug?.names || {},
-        });
-        dumpArmChainDiagLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
-        buildTorsoChainDiagnostics({
-          reason: `stage=${retargetStage} mode=${selectedModeLabel}`,
-          targetBones: retargetTargetBones,
-          sourceBones: sourceResult?.skeleton?.bones || [],
-          names: window.__vid2modelDebug?.names || {},
-        });
-        dumpTorsoChainDiagLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
-        buildFootChainDiagnostics({
-          reason: `stage=${retargetStage} mode=${selectedModeLabel}`,
-          targetBones: retargetTargetBones,
-          sourceBones: sourceResult?.skeleton?.bones || [],
-          names: window.__vid2modelDebug?.names || {},
-        });
-        dumpFootChainDiagLog(`stage=${retargetStage} mode=${selectedModeLabel}`);
-        dumpFootCorrectionDebug(`stage=${retargetStage} mode=${selectedModeLabel}`);
-        diag("retarget-limbs", {
-          stage: retargetStage,
-          mode: selectedModeLabel,
-          issues: limbDiag.issuesCount,
-          total: limbDiag.total,
-          details: limbDiag.issues.slice(0, 12),
-        });
-        const alignment = dumpRetargetAlignmentDiagnostics({
-          reason: "auto-retarget",
+          matched,
+          canonicalCandidates,
+          unmatchedHumanoid,
+          unmatchedTargetBones,
+          postRetargetPoseError,
+          lowerBodyPostError,
+          lowerBodyRotError,
+          rootYawCorrection,
           modelSkinnedMesh,
           sourceResult,
-          names: window.__vid2modelDebug?.names || {},
-          sourceOverlay,
-          overlayUpAxis: _overlayUpAxis,
-          windowRef: window,
         });
-        if (alignment) {
-          diag("retarget-alignment", {
-            stage: retargetStage,
-            compared: alignment.totalCompared,
-            avgPosErr: alignment.avgPosErr,
-            avgRotErrDeg: alignment.avgRotErrDeg,
-            hipsPosErr: alignment.hipsPosErr,
-            overlayYawDeg: alignment.overlayYawDeg,
-            worstPosition: alignment.worstPosition.slice(0, 5),
-          });
-        }
       } catch (err) {
         console.error(err);
         setStatus("Retarget failed. Check model rig names.");
@@ -4021,35 +2172,17 @@
     }
 
     window.__vid2modelDumpAlignment = (reason = "manual") =>
-      dumpRetargetAlignmentDiagnostics({
-        reason,
+      dumpRuntimeAlignment(reason, {
         modelSkinnedMesh,
         sourceResult,
         names: window.__vid2modelDebug?.names || {},
-        sourceOverlay,
-        overlayUpAxis: _overlayUpAxis,
-        windowRef: window,
       });
-    window.__vid2modelDumpSkeleton = (scope = "legs") => {
-      const sourceBones = sourceResult?.skeleton?.bones || [];
-      const targetBones = getRetargetTargetBones(getRetargetStage(), { preferNormalized: false });
-      const names = window.__vid2modelDebug?.names || {};
-      const canonicals = resolveSkeletonDumpCanonicals(scope);
-      const rows = getSkeletonCanonicalRows({
-        targetBones,
-        sourceBones,
-        names,
-        canonicals,
+    window.__vid2modelDumpSkeleton = (scope = "legs") =>
+      dumpRuntimeSkeleton(scope, {
+        sourceBones: sourceResult?.skeleton?.bones || [],
+        targetBones: getRetargetTargetBones(getRetargetStage(), { preferNormalized: false }),
+        names: window.__vid2modelDebug?.names || {},
       });
-      window.__vid2modelSkeletonDump = rows;
-      console.log("[vid2model/diag] skeleton-dump", {
-        scope,
-        total: rows.length,
-        stage: getRetargetStage(),
-      });
-      console.table(rows);
-      return rows;
-    };
     window.__vid2modelBoneLabels = { enabled: false, which: "both", scope: "legs" };
     window.__vid2modelShowBoneLabels = (which = "both", scope = "legs") => {
       const normalizedWhich = ["source", "target", "both"].includes(String(which || "").trim().toLowerCase())
@@ -4122,256 +2255,79 @@
       console.log("[vid2model/diag] file logger disabled");
     };
 
-    function buildDefaultSkeletonProfileBlend() {
-      const out = {};
-      for (const joint of VRM_HUMANOID_BONE_NAMES) {
-        let blend = 1.0;
-        if (joint === "hips") blend = 0.85;
-        else if (joint === "spine") blend = 0.55;
-        else if (joint === "chest") blend = 0.45;
-        else if (joint === "upperChest") blend = 0.4;
-        else if (joint === "neck" || joint === "head") blend = 0.5;
-        else if (joint.includes("Shoulder")) blend = 0.35;
-        else if (joint.includes("UpperArm")) blend = 0.3;
-        else if (joint.includes("LowerArm")) blend = 0.25;
-        else if (joint.includes("Hand")) blend = 0.2;
-        else if (
-          joint.includes("Thumb") ||
-          joint.includes("Index") ||
-          joint.includes("Middle") ||
-          joint.includes("Ring") ||
-          joint.includes("Little")
-        ) {
-          blend = 0.12;
-        } else if (
-          joint.includes("UpperLeg") ||
-          joint.includes("LowerLeg") ||
-          joint.includes("Foot") ||
-          joint.includes("Toes")
-        ) {
-          blend = 1.0;
-        }
-        out[joint] = blend;
-      }
-      return out;
-    }
-
-    function applyParsedModel(gltf, label) {
-      clearModel();
-      const vrm = gltf.userData?.vrm || null;
-      modelRoot = vrm?.scene || gltf.scene || gltf.scenes?.[0] || null;
-      modelLabel = label || "";
-      if (!modelRoot) {
-        setStatus(`Failed to parse model: ${label}`);
-        return;
-      }
-      if (vrm) {
-        if (typeof VRMUtils.rotateVRM0 === "function") {
-          VRMUtils.rotateVRM0(vrm);
-        }
-        if (typeof VRMUtils.combineSkeletons === "function") {
-          VRMUtils.combineSkeletons(modelRoot);
-        } else if (typeof VRMUtils.removeUnnecessaryJoints === "function") {
-          VRMUtils.removeUnnecessaryJoints(modelRoot);
-        }
-        // Match the OSA viewer convention: VRM faces the camera-facing direction by default.
-        modelRoot.rotation.y = Math.PI;
-        modelRoot.updateMatrixWorld(true);
-      }
-      const vrmHumanoidInfo = applyVrmHumanoidBoneNames(vrm);
-      modelVrmHumanoidBones = vrmHumanoidInfo.bones || [];
-      modelVrmNormalizedHumanoidBones = vrmHumanoidInfo.normalizedBones || [];
-      const vrmDirectBones =
-        modelVrmNormalizedHumanoidBones.length > 0
-          ? modelVrmNormalizedHumanoidBones
-          : modelVrmHumanoidBones;
-      scene.add(modelRoot);
-      modelRoot.userData.__baseQuaternion = modelRoot.quaternion.clone();
-      modelRoot.userData.__basePosition = modelRoot.position.clone();
-      modelSkinnedMeshes = findSkinnedMeshes(modelRoot);
-      modelSkinnedMesh = modelSkinnedMeshes[0] || null;
-      if (!modelSkinnedMesh) {
-        setStatus(`Model loaded, but no skinned mesh found: ${label}`);
-        return;
-      }
-      const rootBone = getModelSkeletonRootBone();
-      if (rootBone && rootBone !== modelRoot) {
-        rootBone.userData.__retargetBaseQuaternion = rootBone.quaternion.clone();
-        rootBone.userData.__retargetBasePosition = rootBone.position.clone();
-      }
-      const seenBones = new Set();
-      for (const mesh of modelSkinnedMeshes) {
-        for (const bone of mesh.skeleton?.bones || []) {
-          const id = bone.uuid || `${mesh.uuid}:${bone.name}`;
-          if (seenBones.has(id)) continue;
-          seenBones.add(id);
-          bone.userData.__bindPosition = bone.position.clone();
-        }
-      }
-      logModelBones(modelSkinnedMeshes);
-      let totalMissingBefore = 0;
-      let totalAutoNamed = 0;
-      let totalInferredCanonical = 0;
-      for (const mesh of modelSkinnedMeshes) {
-        const namingInfo = autoNameTargetBones(mesh);
-        totalMissingBefore += namingInfo.missingBefore;
-        totalAutoNamed += namingInfo.autoNamed;
-        totalInferredCanonical += namingInfo.inferredCanonical;
-      }
-      modelRigFingerprint = buildModelRigFingerprint(modelSkinnedMeshes, modelLabel);
-      diag("model-loaded", {
-        file: label,
-        skinnedMeshes: modelSkinnedMeshes.length,
-        vrmHumanoid: vrmHumanoidInfo.applied
-          ? {
-              bones: vrmHumanoidInfo.applied,
-              renamed: vrmHumanoidInfo.renamed,
-              normalized: modelVrmNormalizedHumanoidBones.length,
-            }
-          : null,
-        vrmDirectReady: vrmDirectBones.length > 0,
-        topMeshes: modelSkinnedMeshes.slice(0, 3).map((m) => ({
-          name: m.name || "(unnamed-skinned-mesh)",
-          bones: m.skeleton.bones.length,
-        })),
-        autoNaming:
-          totalMissingBefore > 0
-            ? {
-                missingBefore: totalMissingBefore,
-                autoNamed: totalAutoNamed,
-                inferredCanonical: totalInferredCanonical,
-              }
-            : null,
-      });
-      if (sourceResult) {
-        syncSourceDisplayToModel();
-      }
-      fitToSkeleton(modelRoot);
-      refreshBoneLabels();
-      setStatus(`Model loaded: ${label} (skinned meshes: ${modelSkinnedMeshes.length})`);
-      if (vrm && modelRoot) {
-        const token = modelDefaultAnimationToken;
-        loadDefaultVrmAnimation(DEFAULT_VRM_ANIMATION_URL, vrm)
-          .then((clip) => {
-            if (!clip || token !== modelDefaultAnimationToken || !modelRoot) return;
-            if (modelMixers.length || modelActions.length) return;
-            const mix = new THREE.AnimationMixer(modelRoot);
-            const action = mix.clipAction(clip);
-            action.reset();
-            action.setEffectiveWeight(1);
-            action.setEffectiveTimeScale(1);
-            action.play();
-            modelMixer = mix;
-            modelAction = action;
-            modelMixers = [mix];
-            modelActions = [action];
-            isPlaying = true;
-            updateTimelineUi(0);
-            diag("model-default-animation", {
-              file: label,
-              clip: clip.name,
-              duration: Number(clip.duration.toFixed(3)),
-              url: DEFAULT_VRM_ANIMATION_URL,
-            });
-          })
-          .catch((err) => {
-            console.warn("Default VRM animation failed:", err);
-          });
-      }
-      if (sourceResult) {
-        applyBvhToModel();
-      }
-    }
-
-    function buildCurrentModelSkeletonProfile() {
-      if (!modelSkinnedMesh) return null;
-      const canonicalMap = buildCanonicalBoneMap(modelSkinnedMesh.skeleton?.bones || []);
-      const jointOffsets = {};
-      for (const joint of VRM_HUMANOID_BONE_NAMES) {
-        const bone = canonicalMap.get(joint) || null;
-        if (!bone?.isBone) continue;
-        const bindPos = bone.userData.__bindPosition?.isVector3 ? bone.userData.__bindPosition : bone.position;
-        if (!bindPos?.isVector3) continue;
-        jointOffsets[joint] = [
-          Number(bindPos.x.toFixed(6)),
-          Number(bindPos.y.toFixed(6)),
-          Number(bindPos.z.toFixed(6)),
-        ];
-      }
-      return {
-        format: "vid2model.skeleton-profile.v1",
-        generatedAt: new Date().toISOString(),
-        modelLabel,
-        modelFingerprint: modelRigFingerprint,
-        joint_offsets: jointOffsets,
-        joint_blend: buildDefaultSkeletonProfileBlend(),
-      };
-    }
-
-    window.__vid2modelExportSkeletonProfile = (download = false, filename = "") => {
-      const payload = buildCurrentModelSkeletonProfile();
-      if (!payload) {
-        console.warn("[vid2model/diag] skeleton-profile: no model loaded");
-        return null;
-      }
-      window.__vid2modelSkeletonProfile = payload;
-      if (download) {
-        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-        const href = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = href;
-        a.download =
-          String(filename || "").trim() ||
-          `${(modelLabel || "model").replace(/\.[^.]+$/, "") || "model"}.skeleton-profile.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(href), 0);
-      }
-      console.log("[vid2model/diag] skeleton-profile", {
-        modelLabel: payload.modelLabel,
-        modelFingerprint: payload.modelFingerprint,
-        joints: Object.keys(payload.joint_offsets || {}).length,
-        downloaded: !!download,
-      });
-      return payload;
+    const modelStateBridge = {
+      get sourceResult() { return sourceResult; },
+      get isPlaying() { return isPlaying; },
+      set isPlaying(next) { isPlaying = !!next; },
+      get modelRoot() { return modelRoot; },
+      set modelRoot(next) { modelRoot = next; },
+      get modelSkinnedMesh() { return modelSkinnedMesh; },
+      set modelSkinnedMesh(next) { modelSkinnedMesh = next; },
+      get modelSkinnedMeshes() { return modelSkinnedMeshes; },
+      set modelSkinnedMeshes(next) { modelSkinnedMeshes = next; },
+      get modelMixer() { return modelMixer; },
+      set modelMixer(next) { modelMixer = next; },
+      get modelAction() { return modelAction; },
+      set modelAction(next) { modelAction = next; },
+      get modelMixers() { return modelMixers; },
+      set modelMixers(next) { modelMixers = next; },
+      get modelActions() { return modelActions; },
+      set modelActions(next) { modelActions = next; },
+      get modelDefaultAnimationToken() { return modelDefaultAnimationToken; },
+      get modelLabel() { return modelLabel; },
+      set modelLabel(next) { modelLabel = next; },
+      get modelRigFingerprint() { return modelRigFingerprint; },
+      set modelRigFingerprint(next) { modelRigFingerprint = next; },
+      get modelVrmHumanoidBones() { return modelVrmHumanoidBones; },
+      set modelVrmHumanoidBones(next) { modelVrmHumanoidBones = next; },
+      get modelVrmNormalizedHumanoidBones() { return modelVrmNormalizedHumanoidBones; },
+      set modelVrmNormalizedHumanoidBones(next) { modelVrmNormalizedHumanoidBones = next; },
     };
 
-    function loadModelBuffer(buffer, label) {
-      setStatus(`Loading model: ${label} ...`);
-      gltfLoader.parse(
-        buffer,
-        "",
-        (gltf) => {
-          applyParsedModel(gltf, label);
-        },
-        (err) => {
-          console.error(err);
-          setStatus(`Failed to load model: ${label}`);
-        }
-      );
-    }
+    const applyParsedModel = createViewerParsedModelApplier({
+      state: modelStateBridge,
+      clearModel,
+      scene,
+      setStatus,
+      diag,
+      VRMUtils,
+      applyVrmHumanoidBoneNames,
+      vrmHumanoidBoneNames: VRM_HUMANOID_BONE_NAMES,
+      findSkinnedMeshes,
+      getModelSkeletonRootBone,
+      logModelBones,
+      collectModelBoneRows,
+      logRuntimeModelBones,
+      autoNameTargetBones,
+      buildModelRigFingerprint,
+      syncSourceDisplayToModel,
+      fitToSkeleton,
+      refreshBoneLabels,
+      loadDefaultVrmAnimation,
+      defaultVrmAnimationUrl: DEFAULT_VRM_ANIMATION_URL,
+      updateTimelineUi,
+      applyBvhToModel,
+    });
 
-    function loadModelFile(file) {
-      file.arrayBuffer().then((buffer) => {
-        loadModelBuffer(buffer, file.name);
-      });
-    }
+    window.__vid2modelExportSkeletonProfile = (download = false, filename = "") =>
+      exportCurrentModelSkeletonProfile(download, filename);
 
-    async function loadDefaultModel() {
-      const defaultModelName = "6493143135142452442.glb";
-      const url = new URL("../models/6493143135142452442.glb", import.meta.url).href;
-      modelFileNameEl.textContent = `${defaultModelName} (default)`;
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const buffer = await res.arrayBuffer();
-        loadModelBuffer(buffer, defaultModelName);
-      } catch (err) {
-        console.error(err);
-        setStatus(`Default model not found: viewer/models/${defaultModelName}`);
-      }
-    }
+    const modelLoader = createViewerModelLoader({
+      gltfLoader,
+      setStatus,
+      onParsedModel: applyParsedModel,
+      setModelFileNameText: (text) => {
+        modelFileNameEl.textContent = text;
+      },
+      defaultModelName: "6493143135142452442.glb",
+      importMetaUrl: import.meta.url,
+    });
+
+    const {
+      loadModelBuffer,
+      loadModelFile,
+      loadDefaultModel,
+    } = modelLoader;
 
     async function loadDefault() {
       setStatus("Loading output/think.bvh ...");
@@ -4477,7 +2433,7 @@
         alignModelHipsToSource(false);
         }
 
-        if (sourceOverlay) {
+        if (hasSourceOverlay()) {
           updateSourceOverlay();
         }
         updateBoneLabels();
