@@ -120,6 +120,22 @@ function buildLegChainPairs(pairs, side) {
   };
 }
 
+function buildArmChainPairs(pairs, side) {
+  if (!Array.isArray(pairs) || !side) return null;
+  const byCanonical = new Map(pairs.map((pair) => [pair.canonical, pair]));
+  const upper = byCanonical.get(`${side}UpperArm`) || null;
+  const lower = byCanonical.get(`${side}LowerArm`) || null;
+  const hand = byCanonical.get(`${side}Hand`) || null;
+  if (!upper || !lower || !hand) return null;
+  return {
+    side,
+    upper,
+    lower,
+    hand,
+    enableElbowPlaneCorrection: false,
+  };
+}
+
 function pairProfileKey(targetName, sourceName) {
   return `${targetName || ""}=>${sourceName || ""}`;
 }
@@ -322,6 +338,45 @@ function applyKneePlaneCorrection(chain) {
   currentLowerDir.normalize();
   desiredLowerDir.normalize();
   _legPlaneQ1.setFromUnitVectors(currentLowerDir, desiredLowerDir).normalize();
+  lowerTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(lowerTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  lowerTarget.updateMatrixWorld(true);
+  return true;
+}
+
+function applyElbowPlaneCorrection(chain) {
+  const upperTarget = chain?.upper?.target || null;
+  const lowerTarget = chain?.lower?.target || null;
+  const handTarget = chain?.hand?.target || null;
+  const upperSource = chain?.upper?.source || null;
+  const lowerSource = chain?.lower?.source || null;
+  const handSource = chain?.hand?.source || null;
+  if (!upperTarget || !lowerTarget || !handTarget || !upperSource || !lowerSource || !handSource) return false;
+
+  upperTarget.getWorldPosition(_legPlaneV1);
+  lowerTarget.getWorldPosition(_legPlaneV2);
+  handTarget.getWorldPosition(_legPlaneV3);
+  upperSource.getWorldPosition(_legPlaneV4);
+  lowerSource.getWorldPosition(_legPlaneV5);
+  handSource.getWorldPosition(_legPlaneV6);
+
+  if (!getBendNormal(_legPlaneV1, _legPlaneV2, _legPlaneV3, _legPlaneV7)) return false;
+  if (!getBendNormal(_legPlaneV4, _legPlaneV5, _legPlaneV6, _legPlaneV8)) return false;
+
+  const lowerToHand = _legPlaneV9.subVectors(_legPlaneV3, _legPlaneV2);
+  if (lowerToHand.lengthSq() < 1e-10) return false;
+  lowerToHand.normalize();
+
+  const projectedTarget = _legPlaneV1.copy(_legPlaneV7).sub(lowerToHand.clone().multiplyScalar(_legPlaneV7.dot(lowerToHand)));
+  const projectedSource = _legPlaneV4.copy(_legPlaneV8).sub(lowerToHand.clone().multiplyScalar(_legPlaneV8.dot(lowerToHand)));
+  if (projectedTarget.lengthSq() < 1e-10 || projectedSource.lengthSq() < 1e-10) return false;
+  projectedTarget.normalize();
+  projectedSource.normalize();
+  const dot = Math.max(-1, Math.min(1, projectedTarget.dot(projectedSource)));
+  if (dot > 0.9999) return false;
+
+  _legPlaneQ1.setFromUnitVectors(projectedTarget, projectedSource).normalize();
   lowerTarget.getWorldQuaternion(_legPlaneQ2);
   _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
   setBoneWorldQuaternion(lowerTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
@@ -886,6 +941,7 @@ export function buildLiveRetargetPlan({
   }
 
   const legChains = [];
+  const armChains = [];
   if (profile?.enableKneePlaneCorrectionBySide?.left) {
     const leftChain = buildLegChainPairs(pairs, "left");
     if (leftChain) {
@@ -908,11 +964,26 @@ export function buildLiveRetargetPlan({
       legChains.push(rightChain);
     }
   }
+  if (profile?.enableElbowPlaneCorrectionBySide?.left) {
+    const leftArmChain = buildArmChainPairs(pairs, "left");
+    if (leftArmChain) {
+      leftArmChain.enableElbowPlaneCorrection = !!profile?.enableElbowPlaneCorrectionBySide?.left;
+      armChains.push(leftArmChain);
+    }
+  }
+  if (profile?.enableElbowPlaneCorrectionBySide?.right) {
+    const rightArmChain = buildArmChainPairs(pairs, "right");
+    if (rightArmChain) {
+      rightArmChain.enableElbowPlaneCorrection = !!profile?.enableElbowPlaneCorrectionBySide?.right;
+      armChains.push(rightArmChain);
+    }
+  }
 
   return {
     pairs,
     uniqueSkeletons,
     legChains,
+    armChains,
     posScale,
     yawOffset,
     calibratedPairs,
@@ -1041,6 +1112,13 @@ export function applyLiveRetargetPose({
         const before = computeFootDot(chain);
         applyFootDirectionCorrection(chain);
         pushFootDebug({ side: chain.side, step: "footDirection.post", footDotBefore: before, footDotAfter: computeFootDot(chain) });
+      }
+    }
+  }
+  if (Array.isArray(plan.armChains) && plan.armChains.length) {
+    for (const chain of plan.armChains) {
+      if (chain.enableElbowPlaneCorrection) {
+        applyElbowPlaneCorrection(chain);
       }
     }
   }
