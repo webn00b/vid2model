@@ -107,6 +107,104 @@ class CliValidationTests(unittest.TestCase):
             self.assertEqual(kwargs["roi_crop"], "auto")  # from config
             mocked_write_bvh.assert_called_once()
 
+    def test_preset_from_cli_adjusts_defaults_forwarded_to_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            out_bvh = tmp / "out.bvh"
+            argv = [
+                "convert_video_to_bvh.py",
+                "--input",
+                str(video),
+                "--output-bvh",
+                str(out_bvh),
+                "--preset",
+                "walk",
+            ]
+            with patch("sys.argv", argv):
+                with patch(
+                    "vid2model_lib.cli.convert_video_to_bvh",
+                    return_value=(
+                        30.0,
+                        {},
+                        [[0.0] * 54],
+                        [0.0, 0.0, 0.0],
+                        [],
+                        {"quality": {"rating": "usable", "score": 0.72, "reasons": []}},
+                    ),
+                ) as mocked_convert:
+                    with patch("vid2model_lib.cli.write_bvh"):
+                        rc = cli.main()
+
+            self.assertEqual(rc, 0)
+            kwargs = mocked_convert.call_args.kwargs
+            self.assertEqual(kwargs["loop_mode"], "auto")
+            self.assertEqual(kwargs["opencv_enhance"], "light")
+            self.assertEqual(kwargs["roi_crop"], "auto")
+            self.assertEqual(kwargs["max_gap_interpolate"], 6)
+
+    def test_config_can_set_preset(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            config_path = tmp / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "input": str(video),
+                        "output_bvh": str(tmp / "out.bvh"),
+                        "preset": "dance",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = ["convert_video_to_bvh.py", "--config", str(config_path)]
+            with patch("sys.argv", argv):
+                with patch(
+                    "vid2model_lib.cli.convert_video_to_bvh",
+                    return_value=(
+                        30.0,
+                        {},
+                        [[0.0] * 54],
+                        [0.0, 0.0, 0.0],
+                        [],
+                        {"quality": {"rating": "good", "score": 0.91, "reasons": []}},
+                    ),
+                ) as mocked_convert:
+                    with patch("vid2model_lib.cli.write_bvh"):
+                        rc = cli.main()
+
+            self.assertEqual(rc, 0)
+            kwargs = mocked_convert.call_args.kwargs
+            self.assertEqual(kwargs["model_complexity"], 2)
+            self.assertEqual(kwargs["opencv_enhance"], "strong")
+            self.assertEqual(kwargs["loop_mode"], "off")
+
+    def test_invalid_preset_from_config_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            video = tmp / "input.mp4"
+            video.write_bytes(b"fake")
+            config_path = tmp / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "input": str(video),
+                        "output_bvh": str(tmp / "out.bvh"),
+                        "preset": "acrobatics",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            argv = ["convert_video_to_bvh.py", "--config", str(config_path)]
+            with patch("sys.argv", argv):
+                with self.assertRaisesRegex(ValueError, "preset must be one of"):
+                    cli.main()
+
     def test_invalid_model_complexity_from_config_raises(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
@@ -367,13 +465,22 @@ class CliValidationTests(unittest.TestCase):
             with patch("sys.argv", argv):
                 with patch(
                     "vid2model_lib.cli.convert_video_to_bvh",
-                    return_value=(30.0, {}, [[0.0] * 54], [0.0, 0.0, 0.0], [], {"ok": True}),
+                    return_value=(
+                        30.0,
+                        {},
+                        [[0.0] * 54],
+                        [0.0, 0.0, 0.0],
+                        [],
+                        {"ok": True, "evaluation": {"root_position_jitter": {"before": 1.0, "after": 0.5}}},
+                    ),
                 ):
                     with patch("vid2model_lib.cli.write_diagnostic_json") as mocked_write_diag:
                         rc = cli.main()
 
             self.assertEqual(rc, 0)
             mocked_write_diag.assert_called_once()
+            payload = mocked_write_diag.call_args.args[1]
+            self.assertIn("evaluation", payload)
 
     def test_missing_skeleton_profile_json_raises(self) -> None:
         with tempfile.TemporaryDirectory() as td:

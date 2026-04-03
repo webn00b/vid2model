@@ -6,6 +6,9 @@ export function setupViewerUi({ elements, ops }) {
     modelFileNameEl,
     btnLoadDefault,
     btnRetarget,
+    btnValidateProfile,
+    btnExportProfile,
+    btnImportProfile,
     btnRetargetFab,
     btnZoomIn,
     btnZoomOut,
@@ -20,6 +23,9 @@ export function setupViewerUi({ elements, ops }) {
   const {
     loadDefault,
     applyBvhToModel,
+    validateCurrentRigProfile,
+    exportCurrentRigProfile,
+    importRigProfileFile,
     zoomBy,
     loadBvhText,
     loadModelFile,
@@ -54,6 +60,9 @@ export function setupViewerUi({ elements, ops }) {
 
   btnLoadDefault?.addEventListener("click", loadDefault);
   btnRetarget?.addEventListener("click", applyBvhToModel);
+  btnValidateProfile?.addEventListener("click", validateCurrentRigProfile);
+  btnExportProfile?.addEventListener("click", () => exportCurrentRigProfile(true));
+  btnImportProfile?.addEventListener("click", () => importRigProfileFile());
   if (btnRetargetFab) {
     btnRetargetFab.addEventListener("click", applyBvhToModel);
   }

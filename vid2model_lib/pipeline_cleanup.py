@@ -7,6 +7,49 @@ import numpy as np
 from .skeleton import JOINTS, MAP_TO_POINTS
 
 
+_ADAPTIVE_SMOOTHING_EXPRESSIVE_KEYS = {
+    "head",
+    "neck",
+    "left_wrist",
+    "right_wrist",
+    "left_elbow",
+    "right_elbow",
+    "left_ankle",
+    "right_ankle",
+    "left_toes",
+    "right_toes",
+}
+
+
+def _adaptive_smoothing_alpha_schedule(
+    frames_pts: List[Dict[str, np.ndarray]],
+    keys: List[str],
+    base_alpha: float,
+) -> Dict[str, np.ndarray]:
+    if len(frames_pts) < 2:
+        return {key: np.full(len(frames_pts), base_alpha, dtype=np.float64) for key in keys}
+
+    schedules: Dict[str, np.ndarray] = {}
+    for key in keys:
+        speeds = np.zeros(len(frames_pts), dtype=np.float64)
+        for idx in range(1, len(frames_pts)):
+            current = np.array(frames_pts[idx][key], dtype=np.float64)
+            previous = np.array(frames_pts[idx - 1][key], dtype=np.float64)
+            speeds[idx] = float(np.linalg.norm(current - previous))
+        reference = max(float(np.percentile(speeds, 65)), 1e-4)
+        expressive_boost = 1.18 if key in _ADAPTIVE_SMOOTHING_EXPRESSIVE_KEYS else 1.0
+        schedule = np.full(len(frames_pts), base_alpha, dtype=np.float64)
+        for idx, speed in enumerate(speeds):
+            motion_ratio = min(max(speed / reference, 0.0), 2.0)
+            alpha_scale = 0.55 + motion_ratio * 0.45
+            schedule[idx] = max(
+                0.12,
+                min(0.82, base_alpha * alpha_scale * expressive_boost),
+            )
+        schedules[key] = schedule
+    return schedules
+
+
 def _smooth_pose_frames(
     frames_pts: List[Dict[str, np.ndarray]],
     alpha: float = 0.35,
@@ -18,14 +61,16 @@ def _smooth_pose_frames(
         return [{key: np.array(value, dtype=np.float64) for key, value in pts.items()} for pts in frames_pts]
 
     keys = list(frames_pts[0].keys())
+    adaptive_alphas = _adaptive_smoothing_alpha_schedule(frames_pts, keys, alpha)
 
     forward: List[Dict[str, np.ndarray]] = []
     prev = {key: np.array(frames_pts[0][key], dtype=np.float64) for key in keys}
     forward.append(prev)
-    for pts in frames_pts[1:]:
+    for idx, pts in enumerate(frames_pts[1:], start=1):
         current: Dict[str, np.ndarray] = {}
         for key in keys:
-            current[key] = prev[key] * (1.0 - alpha) + np.array(pts[key], dtype=np.float64) * alpha
+            frame_alpha = float(adaptive_alphas[key][idx])
+            current[key] = prev[key] * (1.0 - frame_alpha) + np.array(pts[key], dtype=np.float64) * frame_alpha
         forward.append(current)
         prev = current
 
@@ -36,7 +81,8 @@ def _smooth_pose_frames(
         pts = frames_pts[idx]
         current = {}
         for key in keys:
-            current[key] = prev[key] * (1.0 - alpha) + np.array(pts[key], dtype=np.float64) * alpha
+            frame_alpha = float(adaptive_alphas[key][idx])
+            current[key] = prev[key] * (1.0 - frame_alpha) + np.array(pts[key], dtype=np.float64) * frame_alpha
         backward[idx] = current
         prev = current
 
@@ -109,14 +155,64 @@ def _leg_keys(side: str) -> Tuple[str, str, str]:
     return (f"{side}_hip", f"{side}_knee", f"{side}_ankle")
 
 
+def _smooth_optional_vectors(
+    vectors: List[Optional[np.ndarray]],
+    alpha: float = 0.45,
+) -> List[Optional[np.ndarray]]:
+    if not vectors:
+        return []
+    alpha = max(0.0, min(1.0, float(alpha)))
+    if alpha <= 1e-6:
+        return [None if value is None else np.array(value, dtype=np.float64) for value in vectors]
+
+    forward: List[Optional[np.ndarray]] = [None] * len(vectors)
+    prev: Optional[np.ndarray] = None
+    for idx, value in enumerate(vectors):
+        if value is None:
+            forward[idx] = None if prev is None else np.array(prev, dtype=np.float64)
+            continue
+        current = np.array(value, dtype=np.float64)
+        if prev is not None:
+            current = prev * (1.0 - alpha) + current * alpha
+        forward[idx] = current
+        prev = current
+
+    backward: List[Optional[np.ndarray]] = [None] * len(vectors)
+    prev = None
+    for idx in range(len(vectors) - 1, -1, -1):
+        value = vectors[idx]
+        if value is None:
+            backward[idx] = None if prev is None else np.array(prev, dtype=np.float64)
+            continue
+        current = np.array(value, dtype=np.float64)
+        if prev is not None:
+            current = prev * (1.0 - alpha) + current * alpha
+        backward[idx] = current
+        prev = current
+
+    smoothed: List[Optional[np.ndarray]] = [None] * len(vectors)
+    for idx, value in enumerate(vectors):
+        if value is None:
+            continue
+        if forward[idx] is not None and backward[idx] is not None:
+            smoothed[idx] = (forward[idx] + backward[idx]) * 0.5
+        elif forward[idx] is not None:
+            smoothed[idx] = np.array(forward[idx], dtype=np.float64)
+        elif backward[idx] is not None:
+            smoothed[idx] = np.array(backward[idx], dtype=np.float64)
+    return smoothed
+
+
 def _empty_cleanup_stats(smooth_alpha: float = 0.0, length_constraints: float = 0.0) -> Dict[str, float]:
     return {
         "side_swaps": 0.0,
         "smooth_alpha": smooth_alpha,
+        "adaptive_smoothing": 1.0 if smooth_alpha > 0.0 else 0.0,
         "length_constraints": length_constraints,
         "contact_windows": 0.0,
         "contact_frames": 0.0,
         "pelvis_contact_frames": 0.0,
+        "root_stabilized_frames": 0.0,
         "leg_ik_frames": 0.0,
     }
 
@@ -141,6 +237,7 @@ def _contact_cleanup_stats(
         stats["contact_frames"] = contact_stats["contact_frames"]
     if pelvis_stats:
         stats["pelvis_contact_frames"] = pelvis_stats["pelvis_contact_frames"]
+        stats["root_stabilized_frames"] = pelvis_stats.get("root_stabilized_frames", 0.0)
     if leg_ik_stats:
         stats["leg_ik_frames"] = leg_ik_stats["leg_ik_frames"]
     return stats
@@ -166,13 +263,15 @@ def _detect_foot_contact_mask(
             prev = frames_pts[idx - 1]
             prev_ankle = np.array(prev[ankle_key], dtype=np.float64)
             prev_toes = np.array(prev[toes_key], dtype=np.float64)
+            prev_heel = np.array(prev[heel_key], dtype=np.float64)
             ankle_speed = float(np.linalg.norm((ankle - prev_ankle)[[0, 2]]))
             toes_speed = float(np.linalg.norm((toes - prev_toes)[[0, 2]]))
-            foot_speeds.append((ankle_speed + toes_speed) * 0.5)
+            heel_speed = float(np.linalg.norm((heel - prev_heel)[[0, 2]]))
+            foot_speeds.append((ankle_speed + toes_speed + heel_speed) / 3.0)
 
     height_floor = float(np.percentile(support_heights, 25))
-    height_tol = max(float(np.std(support_heights)) * 0.75, 0.8)
-    speed_tol = max(float(np.percentile(foot_speeds, 40)), 0.35)
+    height_tol = max(float(np.std(support_heights)) * 0.6, 0.65)
+    speed_tol = max(float(np.percentile(foot_speeds, 35)), 0.22)
 
     mask = np.zeros(len(frames_pts), dtype=bool)
     for idx, (height, speed) in enumerate(zip(support_heights, foot_speeds)):
@@ -184,8 +283,26 @@ def _detect_foot_contact_mask(
         for idx in range(1, len(mask) - 1):
             if not mask[idx] and mask[idx - 1] and mask[idx + 1]:
                 refined[idx] = True
+        for idx in range(1, len(mask) - 1):
+            if refined[idx] and not refined[idx - 1] and not refined[idx + 1]:
+                refined[idx] = False
         mask = refined
     return mask
+
+
+def _contact_window_blend_weights(length: int) -> np.ndarray:
+    if length <= 0:
+        return np.zeros(0, dtype=np.float64)
+    if length <= 2:
+        return np.ones(length, dtype=np.float64)
+    weights = np.ones(length, dtype=np.float64)
+    edge_span = max(1, min(length // 3, 3))
+    for idx in range(edge_span):
+        alpha = (idx + 1) / float(edge_span + 1)
+        weight = 0.45 + alpha * 0.55
+        weights[idx] = min(weights[idx], weight)
+        weights[length - 1 - idx] = min(weights[length - 1 - idx], weight)
+    return weights
 
 
 def _mask_runs(mask: np.ndarray, min_len: int = 2) -> List[Tuple[int, int]]:
@@ -223,9 +340,20 @@ def _stabilize_foot_contacts(
             contact_windows += 1
             contact_frames += end - start
 
-            ankle_xz = np.median(np.stack([frame[ankle_key][[0, 2]] for frame in window], axis=0), axis=0)
-            toes_xz = np.median(np.stack([frame[toes_key][[0, 2]] for frame in window], axis=0), axis=0)
-            heel_xz = np.median(np.stack([frame[heel_key][[0, 2]] for frame in window], axis=0), axis=0)
+            support_centroids = []
+            support_speeds = []
+            for offset, frame in enumerate(window):
+                ankle_xz = np.array(frame[ankle_key][[0, 2]], dtype=np.float64)
+                toes_xz = np.array(frame[toes_key][[0, 2]], dtype=np.float64)
+                heel_xz = np.array(frame[heel_key][[0, 2]], dtype=np.float64)
+                support_centroids.append((ankle_xz + toes_xz + heel_xz) / 3.0)
+                if offset == 0:
+                    support_speeds.append(0.0)
+                else:
+                    support_speeds.append(float(np.linalg.norm(support_centroids[-1] - support_centroids[-2])))
+            anchor_idx = int(np.argmin(np.array(support_speeds, dtype=np.float64)))
+            anchor_frame = window[anchor_idx]
+            anchor_centroid = np.array(support_centroids[anchor_idx], dtype=np.float64)
             support_target = float(
                 np.median(
                     [
@@ -234,27 +362,38 @@ def _stabilize_foot_contacts(
                     ]
                 )
             )
+            weights = _contact_window_blend_weights(end - start)
 
             for idx in range(start, end):
                 frame = adjusted[idx]
+                frame_weight = float(weights[idx - start])
+                current_centroid = (
+                    np.array(frame[ankle_key][[0, 2]], dtype=np.float64)
+                    + np.array(frame[toes_key][[0, 2]], dtype=np.float64)
+                    + np.array(frame[heel_key][[0, 2]], dtype=np.float64)
+                ) / 3.0
+                delta_xz = (anchor_centroid - current_centroid) * frame_weight
                 support_height = min(
                     float(frame[ankle_key][1]),
                     float(frame[toes_key][1]),
                     float(frame[heel_key][1]),
                 )
-                delta_y = support_target - support_height
-                frame[ankle_key] = np.array(
-                    [ankle_xz[0], float(frame[ankle_key][1]) + delta_y, ankle_xz[1]],
-                    dtype=np.float64,
-                )
-                frame[toes_key] = np.array(
-                    [toes_xz[0], float(frame[toes_key][1]) + delta_y, toes_xz[1]],
-                    dtype=np.float64,
-                )
-                frame[heel_key] = np.array(
-                    [heel_xz[0], float(frame[heel_key][1]) + delta_y, heel_xz[1]],
-                    dtype=np.float64,
-                )
+                delta_y = (support_target - support_height) * frame_weight
+                for key in (ankle_key, toes_key, heel_key):
+                    point = np.array(frame[key], dtype=np.float64)
+                    point[0] += float(delta_xz[0])
+                    point[1] += float(delta_y)
+                    point[2] += float(delta_xz[1])
+                    frame[key] = point
+
+                # Keep the support foot shape close to a stable anchor during contact windows.
+                for key in (toes_key, heel_key):
+                    anchor_delta = np.array(anchor_frame[key] - anchor_frame[ankle_key], dtype=np.float64)
+                    current_delta = np.array(frame[key] - frame[ankle_key], dtype=np.float64)
+                    frame[key] = np.array(
+                        frame[key] + (anchor_delta - current_delta) * (0.35 * frame_weight),
+                        dtype=np.float64,
+                    )
 
     return adjusted, {
         "contact_windows": float(contact_windows),
@@ -266,37 +405,73 @@ def _stabilize_pelvis_during_contacts(
     frames_pts: List[Dict[str, np.ndarray]],
 ) -> Tuple[List[Dict[str, np.ndarray]], Dict[str, float]]:
     if len(frames_pts) < 2:
-        return [_copy_pose_frame(pts) for pts in frames_pts], {"pelvis_contact_frames": 0.0}
+        return [_copy_pose_frame(pts) for pts in frames_pts], {"pelvis_contact_frames": 0.0, "root_stabilized_frames": 0.0}
 
     adjusted = [_copy_pose_frame(pts) for pts in frames_pts]
-    desired_mid_hip_xz: List[List[np.ndarray]] = [[] for _ in adjusted]
+    desired_mid_hip: List[List[np.ndarray]] = [[] for _ in adjusted]
+    desired_mid_hip_weight: List[List[float]] = [[] for _ in adjusted]
     pelvis_contact_frames = 0
 
     for side in ("left", "right"):
-        ankle_key, _, _ = _foot_keys(side)
+        ankle_key, toes_key, heel_key = _foot_keys(side)
         mask = _detect_foot_contact_mask(adjusted, side)
         for start, end in _mask_runs(mask, min_len=2):
             window = adjusted[start:end]
             if not window:
                 continue
             pelvis_contact_frames += end - start
-            target_offset = np.median(
+            support_centroids = np.stack(
+                [
+                    (
+                        np.array(frame[ankle_key][[0, 2]], dtype=np.float64)
+                        + np.array(frame[toes_key][[0, 2]], dtype=np.float64)
+                        + np.array(frame[heel_key][[0, 2]], dtype=np.float64)
+                    )
+                    / 3.0
+                    for frame in window
+                ],
+                axis=0,
+            )
+            support_floor = np.array(
+                [
+                    min(float(frame[ankle_key][1]), float(frame[toes_key][1]), float(frame[heel_key][1]))
+                    for frame in window
+                ],
+                dtype=np.float64,
+            )
+            target_offset_xz = np.median(
                 np.stack(
                     [
                         np.array(frame["mid_hip"][[0, 2]], dtype=np.float64)
-                        - np.array(frame[ankle_key][[0, 2]], dtype=np.float64)
-                        for frame in window
+                        - support_centroids[offset]
+                        for offset, frame in enumerate(window)
                     ],
                     axis=0,
                 ),
                 axis=0,
             )
+            target_offset_y = float(
+                np.median(
+                    np.array([float(frame["mid_hip"][1]) for frame in window], dtype=np.float64) - support_floor
+                )
+            )
+            weights = _contact_window_blend_weights(end - start)
             for idx in range(start, end):
-                ankle_xz = np.array(adjusted[idx][ankle_key][[0, 2]], dtype=np.float64)
-                desired_mid_hip_xz[idx].append(ankle_xz + target_offset)
+                offset = idx - start
+                desired_mid_hip[idx].append(
+                    np.array(
+                        [
+                            support_centroids[offset][0] + target_offset_xz[0],
+                            support_floor[offset] + target_offset_y,
+                            support_centroids[offset][1] + target_offset_xz[1],
+                        ],
+                        dtype=np.float64,
+                    )
+                )
+                desired_mid_hip_weight[idx].append(float(weights[offset]))
 
     if pelvis_contact_frames <= 0:
-        return adjusted, {"pelvis_contact_frames": 0.0}
+        return adjusted, {"pelvis_contact_frames": 0.0, "root_stabilized_frames": 0.0}
 
     movable_keys = [
         key
@@ -314,21 +489,43 @@ def _stabilize_pelvis_during_contacts(
         }
     ]
 
-    for idx, candidates in enumerate(desired_mid_hip_xz):
+    raw_targets: List[Optional[np.ndarray]] = [None] * len(adjusted)
+    target_blends = np.zeros(len(adjusted), dtype=np.float64)
+    for idx, candidates in enumerate(desired_mid_hip):
         if not candidates:
             continue
-        current_mid_hip = np.array(adjusted[idx]["mid_hip"][[0, 2]], dtype=np.float64)
-        target_mid_hip = np.mean(np.stack(candidates, axis=0), axis=0)
-        delta_xz = (target_mid_hip - current_mid_hip) * 0.7
-        if float(np.linalg.norm(delta_xz)) < 1e-8:
+        weights = np.array(desired_mid_hip_weight[idx], dtype=np.float64)
+        weight_total = float(np.sum(weights))
+        if weight_total <= 1e-8:
             continue
+        stacked = np.stack(candidates, axis=0)
+        raw_targets[idx] = np.average(stacked, axis=0, weights=weights)
+        target_blends[idx] = float(np.mean(weights))
+
+    smoothed_targets = _smooth_optional_vectors(raw_targets, alpha=0.4)
+    root_stabilized_frames = 0
+
+    for idx, target_mid_hip in enumerate(smoothed_targets):
+        if target_mid_hip is None:
+            continue
+        current_mid_hip = np.array(adjusted[idx]["mid_hip"], dtype=np.float64)
+        frame_blend = 0.45 + min(max(float(target_blends[idx]), 0.0), 1.0) * 0.35
+        delta_xz = (target_mid_hip[[0, 2]] - current_mid_hip[[0, 2]]) * frame_blend
+        delta_y = float(target_mid_hip[1] - current_mid_hip[1]) * min(frame_blend * 0.6, 0.45)
+        if float(np.linalg.norm(delta_xz)) < 1e-8 and abs(delta_y) < 1e-8:
+            continue
+        root_stabilized_frames += 1
         for key in movable_keys:
             point = np.array(adjusted[idx][key], dtype=np.float64)
             point[0] += float(delta_xz[0])
+            point[1] += float(delta_y)
             point[2] += float(delta_xz[1])
             adjusted[idx][key] = point
 
-    return adjusted, {"pelvis_contact_frames": float(pelvis_contact_frames)}
+    return adjusted, {
+        "pelvis_contact_frames": float(pelvis_contact_frames),
+        "root_stabilized_frames": float(root_stabilized_frames),
+    }
 
 
 def _apply_leg_ik_during_contacts(

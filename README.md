@@ -1,114 +1,57 @@
 # vid2model
 
-CLI-пайплайн для конвертации видео в скелетную анимацию:
+`vid2model` конвертирует движение человека из видео в скелетную анимацию и помогает ретаргетить её на VRM-модели.
 
-- `BVH`
-- `JSON`
-- `CSV`
-- `NPZ`
-- `TRC`
-- `FBX` (через Blender CLI)
+Проект состоит из двух частей:
 
-Также в проекте есть локальный браузерный viewer (`viewer/index.html`) для предпросмотра `.bvh`.
+- Python CLI-пайплайн для извлечения motion из видео и экспорта в `BVH`, `JSON`, `CSV`, `NPZ`, `TRC`
+- локальный browser viewer для просмотра `BVH`, ретаргета на `VRM/.glb` и калибровки rig profiles
+
+## Что умеет проект
+
+- извлекать pose sequence из видео через MediaPipe
+- чинить пропуски, side-swaps и шумные участки motion
+- стабилизировать foot contact, pelvis/root motion и leg IK
+- адаптивно сглаживать motion без потери резких акцентов
+- анализировать loopability и при необходимости выделять loop
+- ретаргетить результат на VRM в viewer
+- сохранять, валидировать, экспортировать и переиспользовать rig profiles
+- писать diagnostic JSON с quality summary и before/after cleanup metrics
 
 ## Quick Start
 
-Обычная конвертация:
-
-```bash
-./convert.sh think.mp4 output/think.bvh
-```
-
-Auto-mode с обученной моделью:
-
-```bash
-python3 tools/generate_auto_pose_dataset.py \
-  --input think.mp4 \
-  --label default \
-  --output output/auto_pose_dataset.jsonl
-
-python3 tools/train_auto_pose_model.py \
-  --input output/auto_pose_dataset.jsonl \
-  --output models/auto_pose_model.npz
-
-./convert.sh --config config.auto.json think.mp4 output/think.bvh
-```
-
-One-liners:
-
-```bash
-./convert.sh think.mp4 output/think.bvh
-python3 tools/generate_auto_pose_dataset.py --input think.mp4 --label default --output output/auto_pose_dataset.jsonl
-python3 tools/train_auto_pose_model.py --input output/auto_pose_dataset.jsonl --output models/auto_pose_model.npz
-./convert.sh --config config.auto.json think.mp4 output/think.bvh
-```
-
-## Структура
-
-- `convert_video_to_bvh.py` - основной конвертер (MediaPipe Tasks API).
-- `convert.sh` - удобный shell-раннер, умеет конвертировать во все форматы и опционально в FBX.
-- `bvh_to_fbx.sh` - BVH -> FBX через Blender в headless-режиме.
-- `export_bvh_to_fbx_blender.py` - скрипт экспорта внутри Blender.
-- `viewer/index.html` - локальный BVH viewer (Three.js).
-
-### Архитектура `vid2model_lib`
-
-- `pipeline.py` - публичный фасад и orchestration-слой.
-- `pipeline_video_scan.py` - чтение видео, preprocessing, detector/ROI-логика.
-- `pipeline_gap_fill.py` - заполнение пропусков между найденными pose frames.
-- `pipeline_cleanup.py` - smoothing, foot-contact cleanup, constraints, leg IK.
-- `pipeline_auto_pose.py` - `PoseCorrectionProfile`, auto-pose features и classifier integration.
-- `pipeline_retarget.py` - reference basis, canonicalization, pose corrections.
-- `pipeline_channels.py` - расчёт motion channels и joint rotation solving.
-- `pipeline_motion_transforms.py` - post-process для root yaw и rotation channel cleanup.
-- `pipeline_loop.py` - loopability analysis, extraction и edge blending.
-- `pipeline_rest_offsets.py` - rest offsets и skeleton profile overrides.
-- `pipeline_mirror.py` - mirror / side-swap heuristics и temporal fix helpers.
-
-Идея такая: внешний код продолжает работать через `vid2model_lib.pipeline`, а внутренняя логика живёт в небольших тематических модулях.
-
-## Требования
-
-- Python 3.10+ (рекомендуется 3.11+)
-- `pip`
-- (опционально) Blender для `FBX`
-
-`convert.sh` автоматически:
-
-1. создаёт `.venv` (если её нет),
-2. обновляет `pip`,
-3. ставит зависимости из `requirements.txt`.
-
-## Быстрый старт
+Самый короткий путь:
 
 ```bash
 cd /Users/fedor/projects/personal/videoToModel/vid2model
-./convert.sh /path/to/input.mp4 /path/to/output.bvh
+./convert.sh think.mp4 output/think.bvh
+python3 -m http.server 8080
 ```
 
-## Форматы вывода через `convert.sh`
+После этого открой:
 
-Сигнатура:
+`http://localhost:8080/viewer/index.html`
 
-```bash
-./convert.sh <input_video> <output_bvh> [output_json] [output_csv] [output_npz] [output_trc] [output_fbx]
-```
+## Типичный workflow
 
-Примеры:
+1. Сконвертировать видео в `BVH` и diagnostic JSON.
+2. Проверить quality summary и cleanup evaluation.
+3. Открыть `viewer/index.html`.
+4. Загрузить `BVH`.
+5. Загрузить `VRM` или `GLB` модель.
+6. Запустить retarget.
+7. Если результат хороший, нажать `Validate Profile`.
+8. При необходимости экспортировать и зарегистрировать rig profile в репозитории.
 
-Только BVH:
+## Конвертация через `convert.sh`
+
+Простой запуск:
 
 ```bash
 ./convert.sh think.mp4 output/think.bvh
 ```
 
-BVH + JSON:
-
-```bash
-./convert.sh think.mp4 output/think.bvh output/think.json
-```
-
-Все форматы сразу:
+Все основные форматы сразу:
 
 ```bash
 ./convert.sh \
@@ -117,48 +60,115 @@ BVH + JSON:
   output/think.json \
   output/think.csv \
   output/think.npz \
-  output/think.trc \
-  output/think.fbx
+  output/think.trc
 ```
 
-## Прямой запуск Python-скрипта
+`convert.sh` автоматически:
+
+1. создаёт `.venv`, если её ещё нет
+2. обновляет `pip`
+3. ставит зависимости из `requirements.txt`
+
+## Прямой запуск CLI
+
+Пример с quality diagnostics:
 
 ```bash
-source .venv/bin/activate
+python3 convert_video_to_bvh.py \
+  --preset walk \
+  --input think.mp4 \
+  --output-bvh output/think.bvh \
+  --output-diag-json output/think.diag.json
+```
+
+Пример для более сложного движения:
+
+```bash
+python3 convert_video_to_bvh.py \
+  --preset dance \
+  --input think.mp4 \
+  --output-bvh output/think.bvh \
+  --output-diag-json output/think.diag.json
+```
+
+Полный пример:
+
+```bash
 python3 convert_video_to_bvh.py \
   --input think.mp4 \
   --output-bvh output/think.bvh \
   --output-json output/think.json \
   --output-csv output/think.csv \
   --output-npz output/think.npz \
-  --output-trc output/think.trc
+  --output-trc output/think.trc \
+  --output-diag-json output/think.diag.json
 ```
 
-Поддерживаемые флаги:
+Полезные флаги:
 
-- `--output` (legacy-алиас для BVH, вместо `--output-bvh`)
-- `--output-bvh`
-- `--output-json`
-- `--output-csv`
-- `--output-npz`
-- `--output-trc`
-- `--model-complexity {0,1,2}` (по умолчанию `1`)
-- `--min-detection-confidence` (по умолчанию `0.5`)
-- `--min-tracking-confidence` (по умолчанию `0.5`)
+- `--preset {idle,walk,run,dance}`: baseline-настройки под тип движения
+- `--output-diag-json`: расширенный diagnostic JSON
+- `--loop-mode {off,auto,force}`: loop detection/extraction
+- `--opencv-enhance {off,light,strong}`: preprocessing перед pose detection
+- `--roi-crop {off,auto}`: adaptive crop вокруг человека
+- `--max-gap-interpolate`: сколько кадров подряд можно интерполировать
+- `--skeleton-profile-json`: override rest offsets под конкретную модель
 
-## BVH -> FBX (Blender CLI)
+## Motion presets
 
-```bash
-./bvh_to_fbx.sh output/think.bvh output/think.fbx
-```
+В проекте есть motion presets:
 
-Если Blender не найден в `PATH`, укажи путь явно:
+- `idle`
+- `walk`
+- `run`
+- `dance`
 
-```bash
-BLENDER_BIN=/Applications/Blender.app/Contents/MacOS/Blender ./bvh_to_fbx.sh output/think.bvh output/think.fbx
-```
+Они меняют baseline для detection и cleanup. Практически:
 
-## Локальный viewer
+- `idle` полезен для спокойной речи, жестов, стоячих поз
+- `walk` подходит для обычной циклической ходьбы
+- `run` даёт более жёсткие параметры под быстрые ноги
+- `dance` меньше давит выразительное движение и отключает auto-loop по умолчанию
+
+См. пример конфига: [config.example.yaml](/Users/fedor/projects/personal/videoToModel/vid2model/config.example.yaml)
+
+## Diagnostic JSON
+
+`--output-diag-json` пишет расширенный JSON с несколькими блоками:
+
+- `input`: сколько кадров найдено, сколько интерполировано, какой backend использовался
+- `cleanup`: что именно делал cleanup
+- `evaluation`: before/after метрики после cleanup
+- `root_yaw`: нормализация yaw и дополнительные rotation transforms
+- `loop`: pre-cleanup loopability, итоговое loop detection и extraction
+- `quality`: итоговый score и пользовательские флаги качества
+
+Сейчас в `quality` есть:
+
+- `score`
+- `rating`
+- `tracking_ok`
+- `foot_contact_ok`
+- `loop_candidate`
+- `retarget_risk`
+- `reasons`
+
+Сейчас в `evaluation` есть before/after сравнение по:
+
+- `root_position_jitter`
+- `root_height_jitter`
+- `left_foot_contact_spread`
+- `right_foot_contact_spread`
+- `left_wrist_motion_energy`
+- `right_wrist_motion_energy`
+
+Это удобно для регрессионного контроля: видно не только итоговую оценку, но и что именно cleanup улучшил или ухудшил.
+
+## Viewer
+
+Viewer живёт в [viewer/index.html](/Users/fedor/projects/personal/videoToModel/vid2model/viewer/index.html).
+
+Запуск:
 
 ```bash
 python3 -m http.server 8080
@@ -168,26 +178,138 @@ python3 -m http.server 8080
 
 `http://localhost:8080/viewer/index.html`
 
-Возможности viewer:
+Что умеет viewer:
 
-- загрузка `output/think.bvh` одной кнопкой,
-- загрузка любого локального `.bvh`,
-- `Zoom +/-`,
-- `Play / Pause / Stop`,
-- timeline/scrub,
-- `Reset Camera`.
+- загрузка локального `BVH`
+- загрузка `VRM` и `GLB` моделей
+- retarget source animation на модель
+- локальное сохранение `draft` rig profile после удачного retarget
+- `Validate Profile` для фиксации проверенного профиля
+- `Export Profile` / `Import Profile`
+- автозагрузка repo-backed rig profiles
+- базовые viewer controls: play/pause/stop, zoom, scrub, reset camera
 
-## Smoke-test
+Подробности по retarget path и runtime helpers: [viewer/RETARGET_NOTES.md](/Users/fedor/projects/personal/videoToModel/vid2model/viewer/RETARGET_NOTES.md)
+
+## Rig Profiles
+
+Rig profile описывает, как конкретная модель лучше ретаргетится:
+
+- mapping target bone -> source bone
+- preferred retarget mode
+- limb calibration flags
+- yaw / scale / rotation adjustments
+- cached calibration data
+
+Внутри viewer есть несколько состояний профиля:
+
+- `draft`: автосохранён после удачного retarget, но ещё не подтверждён
+- `validated`: профиль проверен вручную и должен использоваться приоритетно
+
+Приоритет загрузки:
+
+1. local validated
+2. repo validated
+3. local draft
+4. built-in fallback
+
+## Export / Import / Register profile
+
+Если profile уже проверен:
+
+1. Нажми `Validate Profile`
+2. Нажми `Export Profile`
+3. Зарегистрируй JSON в репозитории:
 
 ```bash
-./convert.sh think.mp4 output/think.bvh output/think.json output/think.csv output/think.npz output/think.trc
-python3 -m http.server 8080
+python3 tools/register_rig_profile.py --input /path/to/exported.rig-profile.json
 ```
 
-Опционально FBX:
+Скрипт:
+
+- копирует JSON в `viewer/rig-profiles/`
+- обновляет `viewer/rig-profiles/index.json`
+- заменяет старую запись для того же `modelFingerprint + stage`
+
+После экспорта viewer ещё и печатает готовую register-команду в console log.
+
+Отдельная документация по формату и repo manifest: [viewer/rig-profiles/README.md](/Users/fedor/projects/personal/videoToModel/vid2model/viewer/rig-profiles/README.md)
+
+## Shared rig profiles
+
+Repo-shared profiles лежат в:
+
+- [viewer/rig-profiles/index.json](/Users/fedor/projects/personal/videoToModel/vid2model/viewer/rig-profiles/index.json)
+- [viewer/rig-profiles](/Users/fedor/projects/personal/videoToModel/vid2model/viewer/rig-profiles)
+
+Viewer автоматически подхватывает их по `modelFingerprint`.
+
+## BVH -> FBX
+
+Если нужен FBX через Blender CLI:
 
 ```bash
 ./bvh_to_fbx.sh output/think.bvh output/think.fbx
+```
+
+Если Blender не в `PATH`:
+
+```bash
+BLENDER_BIN=/Applications/Blender.app/Contents/MacOS/Blender ./bvh_to_fbx.sh output/think.bvh output/think.fbx
+```
+
+## Auto-pose dataset / training
+
+Если хочешь обучать auto-mode, рабочий цикл такой:
+
+1. собрать JSONL-датасет
+2. обучить `auto_pose_model.npz`
+3. подключить модель через config
+4. запускать конвертацию с `pose_corrections.mode = auto`
+
+Сборка датасета:
+
+```bash
+python3 tools/generate_auto_pose_dataset.py \
+  --input think.mp4 \
+  --label default \
+  --output output/auto_pose_dataset.jsonl
+```
+
+Обучение:
+
+```bash
+python3 tools/train_auto_pose_model.py \
+  --input output/auto_pose_dataset.jsonl \
+  --output models/auto_pose_model.npz
+```
+
+## Архитектура
+
+Ключевые модули в `vid2model_lib`:
+
+- `pipeline.py`: публичный orchestration facade
+- `pipeline_video_scan.py`: чтение видео и detector/ROI logic
+- `pipeline_gap_fill.py`: заполнение пропусков
+- `pipeline_cleanup.py`: smoothing, foot contacts, pelvis/root stabilization, leg IK
+- `pipeline_auto_pose.py`: presets, features, classifier integration
+- `pipeline_retarget.py`: canonicalization и pose corrections
+- `pipeline_channels.py`: solving motion channels
+- `pipeline_motion_transforms.py`: root yaw и rotation cleanup
+- `pipeline_loop.py`: loop analysis / extraction / blend
+- `pipeline_rest_offsets.py`: rest offsets и skeleton profile overrides
+- `pipeline_mirror.py`: mirror / side-swap heuristics
+
+## Требования
+
+- Python `3.10+`
+- `pip`
+- Blender, если нужен `FBX`
+
+Проверка toolchain:
+
+```bash
+python3 convert_video_to_bvh.py --check-tools
 ```
 
 ## Тесты
@@ -195,133 +317,3 @@ python3 -m http.server 8080
 ```bash
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 ```
-
-## Датасет для auto-mode
-
-Если хочешь обучать модель, которая сама выбирает `pose_corrections`, рабочий цикл такой:
-
-1. собрать размеченные примеры из видео,
-2. обучить `auto_pose_model.npz`,
-3. подключить модель через `pose_corrections.model_path`,
-4. запускать конвертацию с `pose_corrections.mode = auto`.
-
-Сборка JSONL-датасета из видео:
-
-```bash
-python3 tools/generate_auto_pose_dataset.py \
-  --input think.mp4 \
-  --label default \
-  --output output/auto_pose_dataset.jsonl
-```
-
-Можно передать несколько `--input` за один запуск, если у всех одинаковая метка. Каждая строка в JSONL - это один пример с:
-
-- `label`
-- `source`
-- `sample_count`
-- `features`
-- `summary`
-- `meta`
-
-Дальше этот файл можно использовать для обучения простой классификационной модели под `pose_corrections.mode = auto`.
-
-Если у тебя уже есть папка с разметкой, можно собрать датасет сразу по структуре:
-
-```text
-dataset/
-  default/
-    think_01.mp4
-    think_02.mp4
-  mirrored/
-    clip_01.mp4
-  crouched/
-    squat_01.mp4
-```
-
-И прогнать её одной командой:
-
-```bash
-python3 tools/build_auto_pose_dataset_from_dir.py \
-  --dataset-dir dataset \
-  --output output/auto_pose_dataset.jsonl
-```
-
-Обучение модели:
-
-```bash
-python3 tools/train_auto_pose_model.py \
-  --input output/auto_pose_dataset.jsonl \
-  --output models/auto_pose_model.npz
-```
-
-По умолчанию это обучает маленькую `mlp`-модель. Если нужно, можно подкрутить:
-
-- `--hidden-size`
-- `--epochs`
-- `--learning-rate`
-- `--l2`
-- `--seed`
-
-Если хочешь просто включить auto-mode без своей модели, можно оставить `model_path` пустым, тогда пайплайн будет использовать эвристику. Но для нормальной автоматической подстройки лучше подключать обученный `.npz`.
-
-Пример конфига:
-
-```json
-{
-  "pose_corrections": {
-    "mode": "auto",
-    "model_path": "models/auto_pose_model.npz"
-  }
-}
-```
-
-Пример полного запуска:
-
-```bash
-python3 tools/generate_auto_pose_dataset.py \
-  --input think.mp4 \
-  --label default \
-  --output output/auto_pose_dataset.jsonl
-
-python3 tools/train_auto_pose_model.py \
-  --input output/auto_pose_dataset.jsonl \
-  --output models/auto_pose_model.npz
-
-./convert.sh --config config.auto.json think.mp4 output/think.bvh
-```
-
-Пример `config.auto.json`:
-
-```json
-{
-  "pose_corrections": {
-    "mode": "auto",
-    "model_path": "models/auto_pose_model.npz"
-  }
-}
-```
-
-## Как Это Работает
-
-Поток выполнения:
-
-1. CLI получает входное видео и набор целевых форматов.
-2. `pipeline.convert_video_to_bvh()` читает кадры через OpenCV.
-3. Для каждого кадра MediaPipe Pose (Tasks API) возвращает landmarks.
-4. Landmarks переводятся в набор ключевых точек скелета (`pose_points`).
-5. По стабильным кадрам вычисляется rest-поза (`rest_offsets`).
-6. Для каждого кадра считаются BVH-каналы:
-   root translation + ротации суставов в порядке `Zrotation/Xrotation/Yrotation`.
-7. `writers` сохраняют данные в выбранные форматы.
-
-Почему так удобнее:
-
-- проще поддерживать и расширять (изменения локализованы),
-- проще тестировать (math/writers можно проверять отдельно),
-- сохраняется совместимость старого запуска `python convert_video_to_bvh.py ...`.
-
-## Примечания
-
-- MediaPipe-модель (`*.task`) скачивается в папку `models/` автоматически при первом запуске.
-- Качество трекинга сильно зависит от видео (свет, окклюзии, ракурс, полный рост в кадре).
-- `output/` и `models/` рекомендуются как локальные runtime-артефакты (в `.gitignore`).

@@ -23,6 +23,7 @@ export function createViewerParsedModelApplier({
   defaultVrmAnimationUrl,
   updateTimelineUi,
   applyBvhToModel,
+  ensureRepoRigProfilesForModel,
 }) {
   return function applyParsedModel(gltf, label) {
     clearModel();
@@ -165,8 +166,18 @@ export function createViewerParsedModelApplier({
         });
     }
 
+    const repoProfilesPromise = Promise.resolve(
+      ensureRepoRigProfilesForModel
+        ? ensureRepoRigProfilesForModel({
+            modelFingerprint: state.modelRigFingerprint,
+            modelLabel: state.modelLabel,
+          })
+        : null
+    );
     if (state.sourceResult) {
-      applyBvhToModel();
+      repoProfilesPromise.finally(() => {
+        applyBvhToModel();
+      });
     }
   };
 }

@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from vid2model_lib.pipeline_auto_pose import DEFAULT_POSE_CORRECTIONS
-from vid2model_lib.pipeline_cleanup import _copy_pose_frame
+from vid2model_lib.pipeline_cleanup import _copy_pose_frame, _smooth_pose_frames
 from vid2model_lib.pipeline_retarget import apply_pose_corrections
 from vid2model_lib.pipeline_video_scan import _should_fallback_to_legacy_pose
 from vid2model_lib.pipeline import build_pose_correction_profile, fill_pose_gaps
@@ -284,6 +284,95 @@ class PipelineGapFillingTests(unittest.TestCase):
         self.assertLess(max(ankle_x) - min(ankle_x), (max(before_ankle_x) - min(before_ankle_x)) * 0.25)
         self.assertLess(max(ankle_z) - min(ankle_z), (max(before_ankle_z) - min(before_ankle_z)) * 0.25)
 
+    def test_cleanup_pose_frames_keeps_support_foot_shape_more_consistent(self) -> None:
+        frames = []
+        for shift, toe_spread, heel_spread in (
+            (0.0, 0.0, 0.0),
+            (1.2, 1.5, -1.0),
+            (-0.8, -1.3, 0.9),
+            (0.6, 0.8, -0.6),
+        ):
+            frames.append(
+                {
+                    "mid_hip": np.array([0.0, 0.0, 0.0], dtype=np.float64),
+                    "left_hip": np.array([-5.0, 0.0, 0.0], dtype=np.float64),
+                    "right_hip": np.array([5.0, 0.0, 0.0], dtype=np.float64),
+                    "left_knee": np.array([-5.0, -15.0, 0.0], dtype=np.float64),
+                    "right_knee": np.array([5.0, -15.0, 0.0], dtype=np.float64),
+                    "left_ankle": np.array([-5.0 + shift, -30.0, shift], dtype=np.float64),
+                    "right_ankle": np.array([5.0, -30.0, 0.0], dtype=np.float64),
+                    "left_toes": np.array([-5.0 + shift + toe_spread, -30.0, 8.0 + shift + toe_spread], dtype=np.float64),
+                    "right_toes": np.array([5.0, -30.0, 8.0], dtype=np.float64),
+                    "left_heel": np.array([-5.0 + shift + heel_spread, -30.0, -4.0 + shift + heel_spread], dtype=np.float64),
+                    "right_heel": np.array([5.0, -30.0, -4.0], dtype=np.float64),
+                    "left_shoulder": np.array([-8.0, 18.0, 0.0], dtype=np.float64),
+                    "right_shoulder": np.array([8.0, 18.0, 0.0], dtype=np.float64),
+                    "spine": np.array([0.0, 8.0, 0.0], dtype=np.float64),
+                    "chest": np.array([0.0, 18.0, 0.0], dtype=np.float64),
+                    "upper_chest": np.array([0.0, 22.0, 0.0], dtype=np.float64),
+                    "neck": np.array([0.0, 25.0, 0.0], dtype=np.float64),
+                    "head": np.array([0.0, 30.0, 0.0], dtype=np.float64),
+                }
+            )
+
+        anchors = [_copy_pose_frame(frames[0]) for _ in range(3)]
+        before_spans = [
+            float(np.linalg.norm(frame["left_toes"] - frame["left_ankle"])) +
+            float(np.linalg.norm(frame["left_heel"] - frame["left_ankle"]))
+            for frame in frames
+        ]
+        cleaned, _stats = pipeline.cleanup_pose_frames(frames, anchors)
+        after_spans = [
+            float(np.linalg.norm(frame["left_toes"] - frame["left_ankle"])) +
+            float(np.linalg.norm(frame["left_heel"] - frame["left_ankle"]))
+            for frame in cleaned
+        ]
+
+        self.assertLess(max(after_spans) - min(after_spans), (max(before_spans) - min(before_spans)) * 0.6)
+
+    def test_adaptive_smoothing_preserves_fast_wrist_accent(self) -> None:
+        frames = []
+        for wrist_z, hip_x in (
+            (0.0, 0.0),
+            (0.4, 0.6),
+            (12.0, -0.5),
+            (0.5, 0.7),
+            (0.0, 0.0),
+        ):
+            frames.append(
+                {
+                    "mid_hip": np.array([hip_x, 0.0, 0.0], dtype=np.float64),
+                    "left_hip": np.array([-5.0 + hip_x, 0.0, 0.0], dtype=np.float64),
+                    "right_hip": np.array([5.0 + hip_x, 0.0, 0.0], dtype=np.float64),
+                    "left_knee": np.array([-5.0, -15.0, 0.0], dtype=np.float64),
+                    "right_knee": np.array([5.0, -15.0, 0.0], dtype=np.float64),
+                    "left_ankle": np.array([-5.0, -30.0, 0.0], dtype=np.float64),
+                    "right_ankle": np.array([5.0, -30.0, 0.0], dtype=np.float64),
+                    "left_toes": np.array([-5.0, -30.0, 8.0], dtype=np.float64),
+                    "right_toes": np.array([5.0, -30.0, 8.0], dtype=np.float64),
+                    "left_heel": np.array([-5.0, -30.0, -4.0], dtype=np.float64),
+                    "right_heel": np.array([5.0, -30.0, -4.0], dtype=np.float64),
+                    "left_shoulder": np.array([-8.0, 18.0, 0.0], dtype=np.float64),
+                    "right_shoulder": np.array([8.0, 18.0, 0.0], dtype=np.float64),
+                    "left_elbow": np.array([-12.0, 16.0, wrist_z * 0.4], dtype=np.float64),
+                    "right_elbow": np.array([12.0, 16.0, 0.0], dtype=np.float64),
+                    "left_wrist": np.array([-16.0, 14.0, wrist_z], dtype=np.float64),
+                    "right_wrist": np.array([16.0, 14.0, 0.0], dtype=np.float64),
+                    "spine": np.array([hip_x, 8.0, 0.0], dtype=np.float64),
+                    "chest": np.array([hip_x, 18.0, 0.0], dtype=np.float64),
+                    "upper_chest": np.array([hip_x, 22.0, 0.0], dtype=np.float64),
+                    "neck": np.array([hip_x, 25.0, 0.0], dtype=np.float64),
+                    "head": np.array([hip_x, 30.0, 0.0], dtype=np.float64),
+                }
+            )
+
+        smoothed = _smooth_pose_frames(frames, alpha=0.35)
+        wrist_peak = float(smoothed[2]["left_wrist"][2])
+        hip_span = max(float(frame["mid_hip"][0]) for frame in smoothed) - min(float(frame["mid_hip"][0]) for frame in smoothed)
+
+        self.assertGreater(wrist_peak, 5.5)
+        self.assertLess(hip_span, 0.9)
+
     def test_extract_motion_loop_finds_cyclic_window(self) -> None:
         def make_frame(phase: float, offset_x: float = 0.0) -> dict[str, np.ndarray]:
             swing = np.sin(phase)
@@ -527,13 +616,58 @@ class PipelineGapFillingTests(unittest.TestCase):
         anchors = [_copy_pose_frame(frames[0]) for _ in range(3)]
         before_x = [float(frame["mid_hip"][0]) for frame in frames]
         before_z = [float(frame["mid_hip"][2]) for frame in frames]
+        before_steps = [
+            float(np.linalg.norm(frames[idx]["mid_hip"][[0, 2]] - frames[idx - 1]["mid_hip"][[0, 2]]))
+            for idx in range(1, len(frames))
+        ]
         cleaned, stats = pipeline.cleanup_pose_frames(frames, anchors)
         self.assertGreater(stats["pelvis_contact_frames"], 0.0)
+        self.assertGreater(stats["root_stabilized_frames"], 0.0)
 
         after_x = [float(frame["mid_hip"][0]) for frame in cleaned]
         after_z = [float(frame["mid_hip"][2]) for frame in cleaned]
+        after_steps = [
+            float(np.linalg.norm(cleaned[idx]["mid_hip"][[0, 2]] - cleaned[idx - 1]["mid_hip"][[0, 2]]))
+            for idx in range(1, len(cleaned))
+        ]
         self.assertLess(max(after_x) - min(after_x), (max(before_x) - min(before_x)) * 0.6)
         self.assertLess(max(after_z) - min(after_z), (max(before_z) - min(before_z)) * 0.6)
+        self.assertLess(max(after_steps), max(before_steps) * 0.65)
+
+    def test_cleanup_pose_frames_stabilizes_root_height_during_support_window(self) -> None:
+        frames = []
+        for idx, hip_y in enumerate((0.0, 3.5, -2.8, 2.2, -1.7)):
+            sway = (-1.2 if idx % 2 else 1.0) * 0.9
+            frames.append(
+                {
+                    "mid_hip": np.array([sway, hip_y, sway * 0.4], dtype=np.float64),
+                    "left_hip": np.array([-5.0 + sway, hip_y, sway * 0.4], dtype=np.float64),
+                    "right_hip": np.array([5.0 + sway, hip_y, sway * 0.4], dtype=np.float64),
+                    "left_knee": np.array([-5.0, -15.0, 0.0], dtype=np.float64),
+                    "right_knee": np.array([5.0, -15.0, 0.0], dtype=np.float64),
+                    "left_ankle": np.array([-5.0, -30.0, 0.0], dtype=np.float64),
+                    "right_ankle": np.array([5.0, -30.0, 0.0], dtype=np.float64),
+                    "left_toes": np.array([-5.0, -30.0, 8.0], dtype=np.float64),
+                    "right_toes": np.array([5.0, -30.0, 8.0], dtype=np.float64),
+                    "left_heel": np.array([-5.0, -30.0, -4.0], dtype=np.float64),
+                    "right_heel": np.array([5.0, -30.0, -4.0], dtype=np.float64),
+                    "spine": np.array([sway, 8.0 + hip_y, sway * 0.4], dtype=np.float64),
+                    "chest": np.array([sway, 18.0 + hip_y, sway * 0.4], dtype=np.float64),
+                    "upper_chest": np.array([sway, 22.0 + hip_y, sway * 0.4], dtype=np.float64),
+                    "neck": np.array([sway, 25.0 + hip_y, sway * 0.4], dtype=np.float64),
+                    "head": np.array([sway, 30.0 + hip_y, sway * 0.4], dtype=np.float64),
+                    "left_shoulder": np.array([-8.0 + sway, 18.0 + hip_y, sway * 0.4], dtype=np.float64),
+                    "right_shoulder": np.array([8.0 + sway, 18.0 + hip_y, sway * 0.4], dtype=np.float64),
+                }
+            )
+
+        anchors = [_copy_pose_frame(frames[0]) for _ in range(3)]
+        before_y = [float(frame["mid_hip"][1]) for frame in frames]
+        cleaned, stats = pipeline.cleanup_pose_frames(frames, anchors)
+
+        self.assertGreater(stats["root_stabilized_frames"], 0.0)
+        after_y = [float(frame["mid_hip"][1]) for frame in cleaned]
+        self.assertLess(max(after_y) - min(after_y), (max(before_y) - min(before_y)) * 0.7)
 
     def test_cleanup_pose_frames_applies_leg_ik_on_contact_frames(self) -> None:
         base_hip = np.array([-5.0, 0.0, 0.0], dtype=np.float64)
