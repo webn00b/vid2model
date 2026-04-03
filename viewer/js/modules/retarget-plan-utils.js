@@ -119,10 +119,27 @@ export function restoreCachedPairCalibration(
 export function buildProfiledChains(pairs, profile = null) {
   const legChains = [];
   const armChains = [];
+  const hasLegFeatures = (side) =>
+    !!(
+      profile?.enableKneePlaneCorrectionBySide?.[side] ||
+      profile?.enableUpperLegDirectionCorrectionBySide?.[side] ||
+      profile?.enableShinDirectionCorrectionBySide?.[side] ||
+      profile?.enableFootDirectionCorrectionBySide?.[side] ||
+      profile?.enableFootPlaneCorrectionBySide?.[side] ||
+      profile?.enableFootMirrorCorrectionBySide?.[side]
+    );
+  const hasArmFeatures = (side) =>
+    !!(
+      profile?.enableShoulderDirectionCorrectionBySide?.[side] ||
+      profile?.enableUpperArmDirectionCorrectionBySide?.[side] ||
+      profile?.enableElbowPlaneCorrectionBySide?.[side] ||
+      profile?.enableForearmDirectionCorrectionBySide?.[side]
+    );
 
-  if (profile?.enableKneePlaneCorrectionBySide?.left) {
+  if (hasLegFeatures("left")) {
     const leftChain = buildLegChainPairs(pairs, "left");
     if (leftChain) {
+      leftChain.enableKneePlaneCorrection = !!profile?.enableKneePlaneCorrectionBySide?.left;
       leftChain.enableUpperLegDirectionCorrection = !!profile?.enableUpperLegDirectionCorrectionBySide?.left;
       leftChain.enableShinDirectionCorrection = !!profile?.enableShinDirectionCorrectionBySide?.left;
       leftChain.enableFootDirectionCorrection = !!profile?.enableFootDirectionCorrectionBySide?.left;
@@ -131,9 +148,10 @@ export function buildProfiledChains(pairs, profile = null) {
       legChains.push(leftChain);
     }
   }
-  if (profile?.enableKneePlaneCorrectionBySide?.right) {
+  if (hasLegFeatures("right")) {
     const rightChain = buildLegChainPairs(pairs, "right");
     if (rightChain) {
+      rightChain.enableKneePlaneCorrection = !!profile?.enableKneePlaneCorrectionBySide?.right;
       rightChain.enableUpperLegDirectionCorrection = !!profile?.enableUpperLegDirectionCorrectionBySide?.right;
       rightChain.enableShinDirectionCorrection = !!profile?.enableShinDirectionCorrectionBySide?.right;
       rightChain.enableFootDirectionCorrection = !!profile?.enableFootDirectionCorrectionBySide?.right;
@@ -142,17 +160,23 @@ export function buildProfiledChains(pairs, profile = null) {
       legChains.push(rightChain);
     }
   }
-  if (profile?.enableElbowPlaneCorrectionBySide?.left) {
+  if (hasArmFeatures("left")) {
     const leftArmChain = buildArmChainPairs(pairs, "left");
     if (leftArmChain) {
+      leftArmChain.enableShoulderDirectionCorrection = !!profile?.enableShoulderDirectionCorrectionBySide?.left;
+      leftArmChain.enableUpperArmDirectionCorrection = !!profile?.enableUpperArmDirectionCorrectionBySide?.left;
       leftArmChain.enableElbowPlaneCorrection = !!profile?.enableElbowPlaneCorrectionBySide?.left;
+      leftArmChain.enableForearmDirectionCorrection = !!profile?.enableForearmDirectionCorrectionBySide?.left;
       armChains.push(leftArmChain);
     }
   }
-  if (profile?.enableElbowPlaneCorrectionBySide?.right) {
+  if (hasArmFeatures("right")) {
     const rightArmChain = buildArmChainPairs(pairs, "right");
     if (rightArmChain) {
+      rightArmChain.enableShoulderDirectionCorrection = !!profile?.enableShoulderDirectionCorrectionBySide?.right;
+      rightArmChain.enableUpperArmDirectionCorrection = !!profile?.enableUpperArmDirectionCorrectionBySide?.right;
       rightArmChain.enableElbowPlaneCorrection = !!profile?.enableElbowPlaneCorrectionBySide?.right;
+      rightArmChain.enableForearmDirectionCorrection = !!profile?.enableForearmDirectionCorrectionBySide?.right;
       armChains.push(rightArmChain);
     }
   }

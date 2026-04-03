@@ -207,6 +207,62 @@ function applyUpperLegDirectionCorrection(chain) {
   return true;
 }
 
+function applyShoulderDirectionCorrection(chain) {
+  const shoulderTarget = chain?.shoulder?.target || null;
+  const upperTarget = chain?.upper?.target || null;
+  const shoulderSource = chain?.shoulder?.source || null;
+  const upperSource = chain?.upper?.source || null;
+  if (!shoulderTarget || !upperTarget || !shoulderSource || !upperSource) return false;
+
+  shoulderTarget.getWorldPosition(_legPlaneV1);
+  upperTarget.getWorldPosition(_legPlaneV2);
+  shoulderSource.getWorldPosition(_legPlaneV3);
+  upperSource.getWorldPosition(_legPlaneV4);
+
+  const targetDir = _legPlaneV5.subVectors(_legPlaneV2, _legPlaneV1);
+  const sourceDir = _legPlaneV6.subVectors(_legPlaneV4, _legPlaneV3);
+  if (targetDir.lengthSq() < 1e-10 || sourceDir.lengthSq() < 1e-10) return false;
+  targetDir.normalize();
+  sourceDir.normalize();
+
+  const dot = Math.max(-1, Math.min(1, targetDir.dot(sourceDir)));
+  if (dot > 0.9999) return false;
+  _legPlaneQ1.setFromUnitVectors(targetDir, sourceDir).normalize();
+  shoulderTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(shoulderTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  shoulderTarget.updateMatrixWorld(true);
+  return true;
+}
+
+function applyUpperArmDirectionCorrection(chain) {
+  const upperTarget = chain?.upper?.target || null;
+  const lowerTarget = chain?.lower?.target || null;
+  const upperSource = chain?.upper?.source || null;
+  const lowerSource = chain?.lower?.source || null;
+  if (!upperTarget || !lowerTarget || !upperSource || !lowerSource) return false;
+
+  upperTarget.getWorldPosition(_legPlaneV1);
+  lowerTarget.getWorldPosition(_legPlaneV2);
+  upperSource.getWorldPosition(_legPlaneV3);
+  lowerSource.getWorldPosition(_legPlaneV4);
+
+  const targetDir = _legPlaneV5.subVectors(_legPlaneV2, _legPlaneV1);
+  const sourceDir = _legPlaneV6.subVectors(_legPlaneV4, _legPlaneV3);
+  if (targetDir.lengthSq() < 1e-10 || sourceDir.lengthSq() < 1e-10) return false;
+  targetDir.normalize();
+  sourceDir.normalize();
+
+  const dot = Math.max(-1, Math.min(1, targetDir.dot(sourceDir)));
+  if (dot > 0.9999) return false;
+  _legPlaneQ1.setFromUnitVectors(targetDir, sourceDir).normalize();
+  upperTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(upperTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  upperTarget.updateMatrixWorld(true);
+  return true;
+}
+
 function applyKneePlaneCorrection(chain) {
   const upperTarget = chain?.upper?.target || null;
   const lowerTarget = chain?.lower?.target || null;
@@ -273,6 +329,34 @@ function applyKneePlaneCorrection(chain) {
   currentLowerDir.normalize();
   desiredLowerDir.normalize();
   _legPlaneQ1.setFromUnitVectors(currentLowerDir, desiredLowerDir).normalize();
+  lowerTarget.getWorldQuaternion(_legPlaneQ2);
+  _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
+  setBoneWorldQuaternion(lowerTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
+  lowerTarget.updateMatrixWorld(true);
+  return true;
+}
+
+function applyForearmDirectionCorrection(chain) {
+  const lowerTarget = chain?.lower?.target || null;
+  const handTarget = chain?.hand?.target || null;
+  const lowerSource = chain?.lower?.source || null;
+  const handSource = chain?.hand?.source || null;
+  if (!lowerTarget || !handTarget || !lowerSource || !handSource) return false;
+
+  lowerTarget.getWorldPosition(_legPlaneV1);
+  handTarget.getWorldPosition(_legPlaneV2);
+  lowerSource.getWorldPosition(_legPlaneV3);
+  handSource.getWorldPosition(_legPlaneV4);
+
+  const targetDir = _legPlaneV5.subVectors(_legPlaneV2, _legPlaneV1);
+  const sourceDir = _legPlaneV6.subVectors(_legPlaneV4, _legPlaneV3);
+  if (targetDir.lengthSq() < 1e-10 || sourceDir.lengthSq() < 1e-10) return false;
+  targetDir.normalize();
+  sourceDir.normalize();
+
+  const dot = Math.max(-1, Math.min(1, targetDir.dot(sourceDir)));
+  if (dot > 0.9999) return false;
+  _legPlaneQ1.setFromUnitVectors(targetDir, sourceDir).normalize();
   lowerTarget.getWorldQuaternion(_legPlaneQ2);
   _legPlaneQ2.premultiply(_legPlaneQ1).normalize();
   setBoneWorldQuaternion(lowerTarget, _legPlaneQ2, _legPlaneQ3, _legPlaneQ1);
@@ -898,8 +982,10 @@ export function applyLiveRetargetPose({
         applyUpperLegDirectionCorrection(chain);
       }
       const footDotStart = computeFootDot(chain);
-      applyKneePlaneCorrection(chain);
-      pushFootDebug({ side: chain.side, step: "kneePlane", footDotBefore: footDotStart, footDotAfter: computeFootDot(chain) });
+      if (chain.enableKneePlaneCorrection) {
+        applyKneePlaneCorrection(chain);
+        pushFootDebug({ side: chain.side, step: "kneePlane", footDotBefore: footDotStart, footDotAfter: computeFootDot(chain) });
+      }
       if (chain.enableShinDirectionCorrection) {
         const before = computeFootDot(chain);
         applyShinDirectionCorrection(chain);
@@ -924,8 +1010,17 @@ export function applyLiveRetargetPose({
   }
   if (Array.isArray(plan.armChains) && plan.armChains.length) {
     for (const chain of plan.armChains) {
+      if (chain.enableShoulderDirectionCorrection) {
+        applyShoulderDirectionCorrection(chain);
+      }
+      if (chain.enableUpperArmDirectionCorrection) {
+        applyUpperArmDirectionCorrection(chain);
+      }
       if (chain.enableElbowPlaneCorrection) {
         applyElbowPlaneCorrection(chain);
+      }
+      if (chain.enableForearmDirectionCorrection) {
+        applyForearmDirectionCorrection(chain);
       }
     }
   }

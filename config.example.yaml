@@ -1,12 +1,14 @@
 # Example runtime profile for convert_video_to_bvh.py
 # CLI flags override values from this file.
 
+preset: walk       # default|idle|walk|run|dance
 input: ./think.mp4
 output_bvh: ./output/think.bvh
 output_json: ./output/think.json
 output_csv: ./output/think.csv
 output_npz: ./output/think.npz
 output_trc: ./output/think.trc
+output_diag_json: ./output/think.diag.json
 
 model_complexity: 1
 min_detection_confidence: 0.5

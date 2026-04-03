@@ -35,6 +35,7 @@ class CliOptions:
     root_yaw_offset_deg: float
     lower_body_rotation_mode: str
     loop_mode: str
+    preset: str
 
 
 OUTPUT_WRITERS: tuple[tuple[str, str, str], ...] = (
@@ -47,9 +48,48 @@ OUTPUT_WRITERS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+PRESET_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "default": {},
+    "idle": {
+        "opencv_enhance": "light",
+        "roi_crop": "auto",
+        "max_gap_interpolate": 12,
+        "upper_body_rotation_scale": 0.75,
+        "arm_rotation_scale": 0.8,
+    },
+    "walk": {
+        "opencv_enhance": "light",
+        "roi_crop": "auto",
+        "max_gap_interpolate": 6,
+        "loop_mode": "auto",
+        "upper_body_rotation_scale": 0.9,
+        "arm_rotation_scale": 0.95,
+    },
+    "run": {
+        "model_complexity": 2,
+        "opencv_enhance": "light",
+        "roi_crop": "auto",
+        "max_gap_interpolate": 4,
+        "loop_mode": "auto",
+    },
+    "dance": {
+        "model_complexity": 2,
+        "opencv_enhance": "strong",
+        "roi_crop": "auto",
+        "max_gap_interpolate": 4,
+        "loop_mode": "off",
+    },
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert video to BVH/JSON/CSV/NPZ/TRC using MediaPipe Pose.")
     parser.add_argument("--config", help="Path to config file (.json/.yaml/.yml)")
+    parser.add_argument(
+        "--preset",
+        choices=["idle", "walk", "run", "dance"],
+        help="Optional motion preset that adjusts defaults for cleanup and detection.",
+    )
     parser.add_argument("--input", help="Path to input video file (mp4/webm/mov/etc)")
     parser.add_argument("--output", help="Legacy output path for BVH (same as --output-bvh).")
     parser.add_argument("--output-bvh", help="Path to output BVH file.")
@@ -149,6 +189,14 @@ def _merge_config_value(args: argparse.Namespace, cfg: Dict[str, Any], name: str
     return default
 
 
+def _resolve_preset_name(args: argparse.Namespace, cfg: Dict[str, Any]) -> str:
+    preset = _merge_config_value(args, cfg, "preset", "default")
+    normalized = str(preset or "default").strip().lower()
+    if normalized not in PRESET_DEFAULTS:
+        raise ValueError(f"preset must be one of: {', '.join(PRESET_DEFAULTS)}")
+    return normalized
+
+
 def _resolve_path(value: Any) -> Path | None:
     if not value:
         return None
@@ -178,6 +226,8 @@ def _require_probability(value: float, name: str) -> None:
 
 
 def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOptions:
+    preset = _resolve_preset_name(args, cfg)
+    preset_defaults = PRESET_DEFAULTS[preset]
     input_value = _merge_config_value(args, cfg, "input", None)
     output_value = _merge_config_value(args, cfg, "output", None)
     output_bvh = _resolve_path(_merge_config_value(args, cfg, "output_bvh", None))
@@ -188,17 +238,17 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
     output_diag_json = _resolve_path(_merge_config_value(args, cfg, "output_diag_json", None))
     skeleton_profile_json = _resolve_path(_merge_config_value(args, cfg, "skeleton_profile_json", None))
 
-    model_complexity = int(_merge_config_value(args, cfg, "model_complexity", 1))
+    model_complexity = int(_merge_config_value(args, cfg, "model_complexity", preset_defaults.get("model_complexity", 1)))
     min_detection_confidence = float(_merge_config_value(args, cfg, "min_detection_confidence", 0.5))
     min_tracking_confidence = float(_merge_config_value(args, cfg, "min_tracking_confidence", 0.5))
-    max_gap_interpolate = int(_merge_config_value(args, cfg, "max_gap_interpolate", 8))
-    opencv_enhance = str(_merge_config_value(args, cfg, "opencv_enhance", "off")).strip().lower()
+    max_gap_interpolate = int(_merge_config_value(args, cfg, "max_gap_interpolate", preset_defaults.get("max_gap_interpolate", 8)))
+    opencv_enhance = str(_merge_config_value(args, cfg, "opencv_enhance", preset_defaults.get("opencv_enhance", "off"))).strip().lower()
     max_frame_side = int(_merge_config_value(args, cfg, "max_frame_side", 0))
-    roi_crop = str(_merge_config_value(args, cfg, "roi_crop", "off")).strip().lower()
+    roi_crop = str(_merge_config_value(args, cfg, "roi_crop", preset_defaults.get("roi_crop", "off"))).strip().lower()
     progress_every = int(_merge_config_value(args, cfg, "progress_every", 100))
     root_yaw_offset_deg = float(_merge_config_value(args, cfg, "root_yaw_offset_deg", 0.0))
     lower_body_rotation_mode = str(_merge_config_value(args, cfg, "lower_body_rotation_mode", "off")).strip().lower()
-    loop_mode = str(_merge_config_value(args, cfg, "loop_mode", "off")).strip().lower()
+    loop_mode = str(_merge_config_value(args, cfg, "loop_mode", preset_defaults.get("loop_mode", "off"))).strip().lower()
 
     pose_corrections = build_pose_correction_profile(cfg.get("pose_corrections"))
     pose_corrections = replace(
@@ -207,9 +257,21 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
             _merge_config_value(args, cfg, "upper_rotation_offset_deg", pose_corrections.upper_rotation_offset_deg)
         ),
         upper_body_rotation_scale=float(
-            _merge_config_value(args, cfg, "upper_body_rotation_scale", pose_corrections.upper_body_rotation_scale)
+            _merge_config_value(
+                args,
+                cfg,
+                "upper_body_rotation_scale",
+                preset_defaults.get("upper_body_rotation_scale", pose_corrections.upper_body_rotation_scale),
+            )
         ),
-        arm_rotation_scale=float(_merge_config_value(args, cfg, "arm_rotation_scale", pose_corrections.arm_rotation_scale)),
+        arm_rotation_scale=float(
+            _merge_config_value(
+                args,
+                cfg,
+                "arm_rotation_scale",
+                preset_defaults.get("arm_rotation_scale", pose_corrections.arm_rotation_scale),
+            )
+        ),
     )
 
     if model_complexity not in (0, 1, 2):
@@ -268,6 +330,7 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
         root_yaw_offset_deg=root_yaw_offset_deg,
         lower_body_rotation_mode=lower_body_rotation_mode,
         loop_mode=loop_mode,
+        preset=preset,
     )
 
 
@@ -297,6 +360,16 @@ def main() -> int:
         lower_body_rotation_mode=options.lower_body_rotation_mode,
         loop_mode=options.loop_mode,
     )
+    quality = diagnostics.get("quality")
+    if isinstance(quality, dict):
+        rating = str(quality.get("rating", "unknown"))
+        score = float(quality.get("score", 0.0))
+        reasons = quality.get("reasons") or []
+        reason_text = ", ".join(str(item) for item in reasons[:4]) if isinstance(reasons, list) and reasons else "none"
+        print(
+            f"[vid2model] quality rating={rating} score={score:.3f} preset={options.preset} reasons={reason_text}",
+            file=sys.stderr,
+        )
 
     writer_inputs: Dict[str, tuple[Any, ...]] = {
         "output_bvh": (fps, rest_offsets, motion_values),

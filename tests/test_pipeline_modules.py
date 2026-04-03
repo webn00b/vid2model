@@ -177,6 +177,92 @@ class PipelineRetargetModuleTests(unittest.TestCase):
 
         self.assertAlmostEqual(float(min(foot_y)), 0.0, places=6)
 
+    def test_quality_summary_flags_risky_tracking(self) -> None:
+        quality = pipeline._build_quality_summary(
+            source_frame_count=100,
+            detected_count=58,
+            interpolated_frames=18,
+            carried_frames=16,
+            cleanup_stats={
+                "side_swaps": 8.0,
+                "contact_windows": 0.0,
+                "contact_frames": 0.0,
+            },
+            yaw_norm_stats={"normalized_applied": 1.0},
+            unwrap_stats={"changed_values": 64.0},
+            loopability={},
+            pre_cleanup_loopability={"label": "oneshot"},
+            skeleton_profile_stats={"applied": 0.0},
+            pose_backend="solutions",
+            contact_cleanup_enabled=True,
+        )
+
+        self.assertEqual(quality["rating"], "poor")
+        self.assertFalse(quality["tracking_ok"])
+        self.assertTrue(quality["retarget_risk"])
+        self.assertIn("low_detect_ratio", quality["reasons"])
+        self.assertIn("high_carried_ratio", quality["reasons"])
+
+    def test_cleanup_evaluation_reports_before_after_improvements(self) -> None:
+        before = []
+        after = []
+        for hip_x, hip_y, foot_shift, wrist_z in (
+            (0.0, 0.0, 0.0, 0.0),
+            (1.8, 2.5, 1.4, 2.0),
+            (-1.4, -2.0, -1.1, 7.0),
+            (1.1, 1.6, 0.8, 1.5),
+        ):
+            before.append(
+                {
+                    "mid_hip": np.array([hip_x, hip_y, hip_x * 0.4], dtype=np.float64),
+                    "left_ankle": np.array([-5.0 + foot_shift, -30.0, foot_shift], dtype=np.float64),
+                    "right_ankle": np.array([5.0, -30.0, 0.0], dtype=np.float64),
+                    "left_toes": np.array([-5.0 + foot_shift, -30.0, 8.0 + foot_shift], dtype=np.float64),
+                    "right_toes": np.array([5.0, -30.0, 8.0], dtype=np.float64),
+                    "left_heel": np.array([-5.0 + foot_shift, -30.0, -4.0 + foot_shift], dtype=np.float64),
+                    "right_heel": np.array([5.0, -30.0, -4.0], dtype=np.float64),
+                    "left_wrist": np.array([-16.0, 14.0, wrist_z], dtype=np.float64),
+                    "right_wrist": np.array([16.0, 14.0, 0.0], dtype=np.float64),
+                }
+            )
+        for hip_x, hip_y, foot_shift, wrist_z in (
+            (0.2, 0.3, 0.1, 0.5),
+            (0.5, 0.4, 0.2, 1.8),
+            (0.1, 0.2, 0.0, 5.8),
+            (0.3, 0.3, 0.1, 1.0),
+        ):
+            after.append(
+                {
+                    "mid_hip": np.array([hip_x, hip_y, hip_x * 0.2], dtype=np.float64),
+                    "left_ankle": np.array([-5.0 + foot_shift, -30.0, foot_shift], dtype=np.float64),
+                    "right_ankle": np.array([5.0, -30.0, 0.0], dtype=np.float64),
+                    "left_toes": np.array([-5.0 + foot_shift, -30.0, 8.0 + foot_shift], dtype=np.float64),
+                    "right_toes": np.array([5.0, -30.0, 8.0], dtype=np.float64),
+                    "left_heel": np.array([-5.0 + foot_shift, -30.0, -4.0 + foot_shift], dtype=np.float64),
+                    "right_heel": np.array([5.0, -30.0, -4.0], dtype=np.float64),
+                    "left_wrist": np.array([-16.0, 14.0, wrist_z], dtype=np.float64),
+                    "right_wrist": np.array([16.0, 14.0, 0.0], dtype=np.float64),
+                }
+            )
+
+        evaluation = pipeline._build_cleanup_evaluation(before, after)
+        self.assertLess(
+            evaluation["root_position_jitter"]["after"],
+            evaluation["root_position_jitter"]["before"],
+        )
+        self.assertLess(
+            evaluation["left_foot_contact_spread"]["after"],
+            evaluation["left_foot_contact_spread"]["before"],
+        )
+        self.assertGreater(
+            evaluation["left_wrist_motion_energy"]["after"],
+            0.0,
+        )
+        self.assertGreater(
+            evaluation["root_position_jitter"]["improvement_ratio"],
+            0.0,
+        )
+
 
 class PipelineMirrorModuleTests(unittest.TestCase):
     def test_mirror_helpers_detect_and_flip_mirrored_pose(self) -> None:

@@ -123,6 +123,193 @@ __all__ = [
 ]
 
 
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _build_quality_summary(
+    *,
+    source_frame_count: int,
+    detected_count: int,
+    interpolated_frames: int,
+    carried_frames: int,
+    cleanup_stats: Dict[str, float],
+    yaw_norm_stats: Dict[str, float],
+    unwrap_stats: Dict[str, float],
+    loopability: Dict[str, Any],
+    pre_cleanup_loopability: Dict[str, Any],
+    skeleton_profile_stats: Dict[str, Any],
+    pose_backend: str,
+    contact_cleanup_enabled: bool,
+) -> Dict[str, Any]:
+    total_frames = max(int(source_frame_count), 1)
+    detected_ratio = detected_count / total_frames
+    interpolated_ratio = interpolated_frames / total_frames
+    carried_ratio = carried_frames / total_frames
+    side_swap_ratio = float(cleanup_stats.get("side_swaps", 0.0)) / total_frames
+    contact_frames = float(cleanup_stats.get("contact_frames", 0.0))
+    contact_ratio = min(contact_frames / total_frames, 1.0)
+    unwrap_ratio = float(unwrap_stats.get("changed_values", 0.0)) / max(total_frames * 3.0, 1.0)
+    loop_meta = loopability or pre_cleanup_loopability or {}
+    loop_label = str(loop_meta.get("label", "oneshot"))
+
+    score = 1.0
+    score -= max(0.0, 0.85 - detected_ratio) * 1.1
+    score -= interpolated_ratio * 0.25
+    score -= carried_ratio * 0.55
+    score -= min(side_swap_ratio, 0.2) * 0.5
+    score -= min(unwrap_ratio, 0.35) * 0.2
+    if pose_backend != "tasks":
+        score -= 0.03
+    if contact_cleanup_enabled and contact_ratio <= 0.0:
+        score -= 0.08
+    if float(yaw_norm_stats.get("normalized_applied", 0.0)) > 0.5:
+        score -= 0.03
+    if float(skeleton_profile_stats.get("applied", 0.0)) > 0.5:
+        score += 0.02
+    score = _clamp01(score)
+
+    reasons: List[str] = []
+    if detected_ratio < 0.75:
+        reasons.append("low_detect_ratio")
+    if interpolated_ratio > 0.12:
+        reasons.append("high_interpolation_ratio")
+    if carried_ratio > 0.08:
+        reasons.append("high_carried_ratio")
+    if side_swap_ratio > 0.03:
+        reasons.append("side_swap_instability")
+    if contact_cleanup_enabled and contact_ratio <= 0.0:
+        reasons.append("no_stable_foot_contacts")
+    if unwrap_ratio > 0.15:
+        reasons.append("large_rotation_unwrap")
+    if pose_backend != "tasks":
+        reasons.append("legacy_pose_backend")
+
+    if score >= 0.85:
+        rating = "good"
+    elif score >= 0.65:
+        rating = "usable"
+    elif score >= 0.45:
+        rating = "risky"
+    else:
+        rating = "poor"
+
+    tracking_ok = detected_ratio >= 0.8 and carried_ratio <= 0.05
+    foot_contact_ok = (not contact_cleanup_enabled) or contact_ratio > 0.0
+    loop_candidate = loop_label == "cyclic"
+    retarget_risk = (not tracking_ok) or side_swap_ratio > 0.04 or unwrap_ratio > 0.2
+
+    return {
+        "score": float(score),
+        "rating": rating,
+        "tracking_ok": tracking_ok,
+        "foot_contact_ok": foot_contact_ok,
+        "loop_candidate": loop_candidate,
+        "retarget_risk": retarget_risk,
+        "detected_ratio": float(detected_ratio),
+        "interpolated_ratio": float(interpolated_ratio),
+        "carried_ratio": float(carried_ratio),
+        "contact_ratio": float(contact_ratio),
+        "loop_label": loop_label,
+        "reasons": reasons,
+    }
+
+
+def _frame_step_energy(frames_pts: List[Dict[str, np.ndarray]], key: str, axes: Tuple[int, ...] = (0, 1, 2)) -> float:
+    if len(frames_pts) < 2:
+        return 0.0
+    steps = []
+    for idx in range(1, len(frames_pts)):
+        current = np.array(frames_pts[idx].get(key, np.zeros(3, dtype=np.float64)), dtype=np.float64)
+        previous = np.array(frames_pts[idx - 1].get(key, np.zeros(3, dtype=np.float64)), dtype=np.float64)
+        steps.append(float(np.linalg.norm((current - previous)[list(axes)])))
+    return float(np.mean(np.array(steps, dtype=np.float64))) if steps else 0.0
+
+
+def _foot_contact_spread_metric(frames_pts: List[Dict[str, np.ndarray]], side: str) -> float:
+    if not frames_pts:
+        return 0.0
+    ankle_key = f"{side}_ankle"
+    toes_key = f"{side}_toes"
+    heel_key = f"{side}_heel"
+    centroids = []
+    for frame in frames_pts:
+        ankle = np.array(frame.get(ankle_key, np.zeros(3, dtype=np.float64)), dtype=np.float64)
+        toes = np.array(frame.get(toes_key, ankle), dtype=np.float64)
+        heel = np.array(frame.get(heel_key, ankle), dtype=np.float64)
+        centroid = (ankle[[0, 2]] + toes[[0, 2]] + heel[[0, 2]]) / 3.0
+        centroids.append(centroid)
+    if not centroids:
+        return 0.0
+    stacked = np.stack(centroids, axis=0)
+    spread = np.max(stacked, axis=0) - np.min(stacked, axis=0)
+    return float(np.linalg.norm(spread))
+
+
+def _ratio_delta(before: float, after: float, invert: bool = False) -> Dict[str, float]:
+    before = float(before)
+    after = float(after)
+    if before <= 1e-8:
+        improvement = 0.0 if abs(after - before) <= 1e-8 else (-1.0 if invert else 1.0)
+    else:
+        raw = (after - before) / before
+        improvement = -raw if invert else raw
+    return {
+        "before": before,
+        "after": after,
+        "delta": after - before,
+        "improvement_ratio": float(improvement),
+    }
+
+
+def _build_cleanup_evaluation(
+    frames_before_cleanup: List[Dict[str, np.ndarray]],
+    frames_after_cleanup: List[Dict[str, np.ndarray]],
+) -> Dict[str, Any]:
+    if not frames_before_cleanup or not frames_after_cleanup:
+        return {
+            "root_position_jitter": _ratio_delta(0.0, 0.0, invert=True),
+            "root_height_jitter": _ratio_delta(0.0, 0.0, invert=True),
+            "left_foot_contact_spread": _ratio_delta(0.0, 0.0, invert=True),
+            "right_foot_contact_spread": _ratio_delta(0.0, 0.0, invert=True),
+            "left_wrist_motion_energy": _ratio_delta(0.0, 0.0, invert=False),
+            "right_wrist_motion_energy": _ratio_delta(0.0, 0.0, invert=False),
+        }
+
+    return {
+        "root_position_jitter": _ratio_delta(
+            _frame_step_energy(frames_before_cleanup, "mid_hip", axes=(0, 2)),
+            _frame_step_energy(frames_after_cleanup, "mid_hip", axes=(0, 2)),
+            invert=True,
+        ),
+        "root_height_jitter": _ratio_delta(
+            _frame_step_energy(frames_before_cleanup, "mid_hip", axes=(1,)),
+            _frame_step_energy(frames_after_cleanup, "mid_hip", axes=(1,)),
+            invert=True,
+        ),
+        "left_foot_contact_spread": _ratio_delta(
+            _foot_contact_spread_metric(frames_before_cleanup, "left"),
+            _foot_contact_spread_metric(frames_after_cleanup, "left"),
+            invert=True,
+        ),
+        "right_foot_contact_spread": _ratio_delta(
+            _foot_contact_spread_metric(frames_before_cleanup, "right"),
+            _foot_contact_spread_metric(frames_after_cleanup, "right"),
+            invert=True,
+        ),
+        "left_wrist_motion_energy": _ratio_delta(
+            _frame_step_energy(frames_before_cleanup, "left_wrist", axes=(0, 1, 2)),
+            _frame_step_energy(frames_after_cleanup, "left_wrist", axes=(0, 1, 2)),
+            invert=False,
+        ),
+        "right_wrist_motion_energy": _ratio_delta(
+            _frame_step_energy(frames_before_cleanup, "right_wrist", axes=(0, 1, 2)),
+            _frame_step_energy(frames_after_cleanup, "right_wrist", axes=(0, 1, 2)),
+            invert=False,
+        ),
+    }
+
+
 def resolve_auto_pose_corrections(
     samples: List[Dict[str, np.ndarray]],
     base: PoseCorrectionProfile,
@@ -324,6 +511,7 @@ def convert_video_to_bvh(
     ]
     frames_pts = [_apply_pose_corrections(pts, corrections) for pts in frames_pts]
     canonical_anchor_samples = [_apply_pose_corrections(sample, corrections) for sample in canonical_anchor_samples]
+    frames_before_cleanup = [_copy_pose_frame(pts) for pts in frames_pts]
     pre_cleanup_loopability: Dict[str, Any] = {}
     contact_cleanup_enabled = True
     if len(frames_pts) >= 12:
@@ -353,6 +541,7 @@ def convert_video_to_bvh(
         canonical_anchor_samples,
         use_contact_cleanup=False,
     )
+    cleanup_evaluation = _build_cleanup_evaluation(frames_before_cleanup, frames_pts)
     print(
         (
             f"[vid2model] source_cleanup side_swaps={int(cleanup_stats['side_swaps'])} "
@@ -360,7 +549,19 @@ def convert_video_to_bvh(
             f"segments={int(cleanup_stats['length_constraints'])} "
             f"foot_contacts={int(cleanup_stats['contact_windows'])}/{int(cleanup_stats['contact_frames'])} "
             f"pelvis_frames={int(cleanup_stats['pelvis_contact_frames'])} "
+            f"root_frames={int(cleanup_stats.get('root_stabilized_frames', 0.0))} "
             f"leg_ik_frames={int(cleanup_stats['leg_ik_frames'])}"
+        ),
+        file=sys.stderr,
+    )
+    print(
+        (
+            f"[vid2model] cleanup_eval root_jitter={cleanup_evaluation['root_position_jitter']['before']:.3f}"
+            f"->{cleanup_evaluation['root_position_jitter']['after']:.3f} "
+            f"root_height={cleanup_evaluation['root_height_jitter']['before']:.3f}"
+            f"->{cleanup_evaluation['root_height_jitter']['after']:.3f} "
+            f"left_foot={cleanup_evaluation['left_foot_contact_spread']['before']:.3f}"
+            f"->{cleanup_evaluation['left_foot_contact_spread']['after']:.3f}"
         ),
         file=sys.stderr,
     )
@@ -470,6 +671,7 @@ def convert_video_to_bvh(
             "pose_backend": pose_backend,
         },
         "cleanup": {key: float(value) for key, value in cleanup_stats.items()},
+        "evaluation": cleanup_evaluation,
         "root_yaw": {
             "normalized_applied": float(yaw_norm_stats["applied"]),
             "normalized_offset_deg": float(yaw_norm_stats["offset_deg"]),
@@ -492,5 +694,19 @@ def convert_video_to_bvh(
             "frame_count": int(len(motion_values)),
         },
     }
+    diagnostics["quality"] = _build_quality_summary(
+        source_frame_count=len(frames_pts_raw),
+        detected_count=detected_count,
+        interpolated_frames=interpolated_frames,
+        carried_frames=carried_frames,
+        cleanup_stats=cleanup_stats,
+        yaw_norm_stats=yaw_norm_stats,
+        unwrap_stats=unwrap_stats,
+        loopability=loopability,
+        pre_cleanup_loopability=pre_cleanup_loopability,
+        skeleton_profile_stats=skeleton_profile_stats,
+        pose_backend=pose_backend,
+        contact_cleanup_enabled=contact_cleanup_enabled,
+    )
 
     return fps, rest_offsets, motion_values, ref_root, frames_pts, diagnostics

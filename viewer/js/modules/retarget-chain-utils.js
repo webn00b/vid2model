@@ -51,6 +51,7 @@ export function buildLegChainPairs(pairs, side) {
     lower,
     foot,
     toes,
+    enableKneePlaneCorrection: false,
     enableUpperLegDirectionCorrection: false,
     enableShinDirectionCorrection: false,
     enableFootDirectionCorrection: false,
@@ -62,15 +63,20 @@ export function buildLegChainPairs(pairs, side) {
 export function buildArmChainPairs(pairs, side) {
   if (!Array.isArray(pairs) || !side) return null;
   const byCanonical = new Map(pairs.map((pair) => [pair.canonical, pair]));
+  const shoulder = byCanonical.get(`${side}Shoulder`) || null;
   const upper = byCanonical.get(`${side}UpperArm`) || null;
   const lower = byCanonical.get(`${side}LowerArm`) || null;
   const hand = byCanonical.get(`${side}Hand`) || null;
   if (!upper || !lower || !hand) return null;
   return {
     side,
+    shoulder,
     upper,
     lower,
     hand,
+    enableShoulderDirectionCorrection: false,
+    enableUpperArmDirectionCorrection: false,
     enableElbowPlaneCorrection: false,
+    enableForearmDirectionCorrection: false,
   };
 }
