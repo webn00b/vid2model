@@ -202,6 +202,48 @@ Viewer-side карта retarget, rig-profile priority и model-fit hooks: [docs/
 
 План рефакторинга `viewer/js/modules` без изменения поведения: [docs/viewer-modules-refactor-plan.md](/Users/fedor/projects/personal/videoToModel/vid2model/docs/viewer-modules-refactor-plan.md)
 
+## Headless Retarget Validation
+
+Для автоматической проверки `BVH + GLB/VRM` без браузера есть headless runner:
+
+- reusable runtime: [viewer/js/modules/headless-retarget-validation.js](/Users/fedor/projects/personal/videoToModel/vid2model/viewer/js/modules/headless-retarget-validation.js)
+- CLI entrypoint: [tools/headless_retarget_validation.mjs](/Users/fedor/projects/personal/videoToModel/vid2model/tools/headless_retarget_validation.mjs)
+
+Он переиспользует viewer-side retarget path, rig-profile resolution, calibration и runtime diagnostics, но запускается в Node. Для bare imports используются тонкие локальные ESM bridge-пакеты в `node_modules`, которые просто реэкспортируют bundled vendor-копии `three` и `@pixiv/three-vrm` из `viewer/vendor`.
+
+Пример:
+
+```bash
+node tools/headless_retarget_validation.mjs \
+  --model viewer/models/low_poly_humanoid_robot.glb \
+  --bvh output/think.bvh \
+  --stage body \
+  --pretty
+```
+
+С записью результата в файл:
+
+```bash
+node tools/headless_retarget_validation.mjs \
+  --model viewer/models/MoonGirl.vrm \
+  --bvh output/think.bvh \
+  --stage full \
+  --out output/headless-retarget.json \
+  --pretty
+```
+
+CLI печатает machine-readable JSON со стабильным верхнеуровневым контрактом:
+
+- `input`: stage и исходные пути
+- `model`: fingerprint, VRM metadata и список костей skinned mesh
+- `source`: summary по `BVH`
+- `rigProfile`: какой profile реально был выбран
+- `mapping`: matched pairs, topology fallback и mirrored-side decisions
+- `selection`: выбранный retarget attempt, mode, root yaw и pose-error probe
+- `diagnostics`: viewer-like events, debug state и calibration summary
+
+Это удобно для CI/regression-проверок, когда нужно сравнить headless retarget decisions с браузерным viewer flow без ручного открытия `viewer/index.html`.
+
 ## Regression Pass
 
 Для повторяемой проверки проблемных сценариев есть единый runner:
@@ -215,6 +257,7 @@ python3 tools/run_regression_checks.py
 - `source_pipeline_diagnostics`: source-stage diagnostics и `quality.retarget_risk` для проблем в cleanup/finalize path
 - `root_yaw_contract`: viewer-политику вокруг `retarget-root-yaw`, чтобы clip, уже центрированный Python-экспортом, не получал лишний large flip
 - `atypical_model_mapping`: выбор canonical bone для нетипичных rig'ов, где helper/socket/end кости не должны выигрывать у основной кости
+- `headless_retarget_validation`: machine-readable headless retarget contract для `BVH + GLB/VRM` вне browser viewer
 
 Полезные режимы:
 

@@ -51,6 +51,10 @@
     import { buildVrmDirectBodyPlan } from "./modules/retarget-vrm.js";
     import { getBuiltinRigProfile } from "./modules/rig-profiles.js";
     import {
+      resolveBodyMetricCanonicalFilter,
+      resolveRetargetStageCanonicalFilter,
+    } from "./modules/retarget-stage-contract.js";
+    import {
       attemptPriority,
       buildCanonicalBoneMap,
       buildRenamedClip,
@@ -788,9 +792,12 @@
       return window.__vid2modelUseVrmDirect === true;
     }
 
-    function getCanonicalFilterForStage(stage) {
-      if (stage === "body") return RETARGET_BODY_CANONICAL;
-      return null;
+    function getCanonicalFilterForStage(stage, profile = null) {
+      return resolveRetargetStageCanonicalFilter(stage, profile);
+    }
+
+    function getBodyMetricCanonicalFilter(stage, profile = null) {
+      return resolveBodyMetricCanonicalFilter(stage, profile);
     }
 
     function resetModelRootOrientation() {
@@ -1375,19 +1382,8 @@
           stage: retargetStage,
           saved: false,
         }));
-        const profileBodyCanonicalKeys =
-          retargetStage === "body" && Array.isArray(cachedRigProfile?.bodyCanonicalKeys)
-            ? cachedRigProfile.bodyCanonicalKeys
-            : null;
-        const useBodyCoreRetarget =
-          !profileBodyCanonicalKeys &&
-          retargetStage === "body" &&
-          String(cachedRigProfile?.bodyCanonicalMode || "").trim().toLowerCase() === "core";
-        const canonicalFilter = profileBodyCanonicalKeys
-          ? new Set(profileBodyCanonicalKeys.map((name) => String(name || "").trim()).filter(Boolean))
-          : useBodyCoreRetarget
-            ? RETARGET_BODY_CORE_CANONICAL
-            : getCanonicalFilterForStage(retargetStage);
+        const canonicalFilter = getCanonicalFilterForStage(retargetStage, cachedRigProfile);
+        const bodyMetricCanonicalFilter = getBodyMetricCanonicalFilter(retargetStage, cachedRigProfile);
         const stageClip = buildStageSourceClip(
           sourceResult.clip,
           sourceResult.skeleton.bones,
@@ -1404,12 +1400,14 @@
           sourceResult.skeleton.bones,
           cachedRigProfile?.rotationScaleByCanonical || null
         ) || stageClip;
-        const retargetTargetBones = getRetargetTargetBones(retargetStage).filter((bone) =>
-          canonicalFilter.has(canonicalBoneKey(bone.name) || "")
-        );
-        const normalizedDirectBones = getRetargetTargetBones(retargetStage, { preferNormalized: true }).filter((bone) =>
-          canonicalFilter.has(canonicalBoneKey(bone.name) || "")
-        );
+        const retargetTargetBones = getRetargetTargetBones(retargetStage).filter((bone) => {
+          if (!canonicalFilter) return true;
+          return canonicalFilter.has(canonicalBoneKey(bone.name) || "");
+        });
+        const normalizedDirectBones = getRetargetTargetBones(retargetStage, { preferNormalized: true }).filter((bone) => {
+          if (!canonicalFilter) return true;
+          return canonicalFilter.has(canonicalBoneKey(bone.name) || "");
+        });
         const directRetargetTargetBones = normalizedDirectBones.length ? normalizedDirectBones : retargetTargetBones;
         resetModelRootOrientation();
         const preferVrmDirectBody =
@@ -1829,8 +1827,7 @@
         let measureBodyErr = null;
         let bodyErrBaseline = null;
         if (liveRetarget) {
-          const bodyEvalCanonical =
-            retargetStage === "body" ? RETARGET_BODY_CORE_CANONICAL : RETARGET_BODY_CANONICAL;
+          const bodyEvalCanonical = bodyMetricCanonicalFilter;
           const bodyTargetBones = retargetTargetBones.filter((b) =>
             bodyEvalCanonical.has(canonicalBoneKey(b.name) || "")
           );
@@ -1862,7 +1859,7 @@
               ? {
                   ...attemptedBodyCalibration,
                   entries: attemptedBodyCalibration.entries.filter((e) =>
-                    RETARGET_BODY_CORE_CANONICAL.has(e.canonical)
+                    bodyMetricCanonicalFilter.has(e.canonical)
                   ),
                 }
               : attemptedBodyCalibration;
@@ -1950,8 +1947,7 @@
           }
         }
         if (!liveRetarget) {
-          const bodyEvalCanonical =
-            retargetStage === "body" ? RETARGET_BODY_CORE_CANONICAL : RETARGET_BODY_CANONICAL;
+          const bodyEvalCanonical = bodyMetricCanonicalFilter;
           const bodyTargetBones = retargetTargetBones.filter((b) =>
             bodyEvalCanonical.has(canonicalBoneKey(b.name) || "")
           );
@@ -1983,7 +1979,7 @@
               ? {
                   ...attemptedBodyCalibration,
                   entries: attemptedBodyCalibration.entries.filter((e) =>
-                    RETARGET_BODY_CORE_CANONICAL.has(e.canonical)
+                    bodyMetricCanonicalFilter.has(e.canonical)
                   ),
                 }
               : attemptedBodyCalibration;
@@ -2124,7 +2120,7 @@
         if (hipsAlign) {
           diag("retarget-hips-align", { stage: retargetStage, ...hipsAlign });
         }
-        const summaryCanonicalFilter = getCanonicalFilterForStage(retargetStage);
+        const summaryCanonicalFilter = canonicalFilter;
         const summaryTargetBones = retargetTargetBones.filter((bone) => {
           const canonical = canonicalBoneKey(bone.name) || "";
           if (!canonical) return false;

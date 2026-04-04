@@ -14,6 +14,7 @@ class RegressionRunnerTests(unittest.TestCase):
                 "source_pipeline_diagnostics",
                 "root_yaw_contract",
                 "atypical_model_mapping",
+                "headless_retarget_validation",
             },
         )
 
@@ -27,6 +28,7 @@ class RegressionRunnerTests(unittest.TestCase):
         self.assertIn("source_pipeline_diagnostics", text)
         self.assertIn("root_yaw_contract", text)
         self.assertIn("atypical_model_mapping", text)
+        self.assertIn("headless_retarget_validation", text)
         self.assertIn("signals:", text)
         self.assertIn("command:", text)
 

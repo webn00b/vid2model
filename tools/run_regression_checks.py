@@ -56,6 +56,16 @@ REGRESSION_SCENARIOS: tuple[RegressionScenario, ...] = (
         ),
         command=("node", "--test", "tests/atypical-rig-mapping.test.mjs"),
     ),
+    RegressionScenario(
+        name="headless_retarget_validation",
+        description="Headless GLB/VRM validation should emit stable machine-readable retarget selection and diagnostics outside the browser viewer.",
+        signals=(
+            "format=vid2model.headless-retarget.v1",
+            "selection.selectedModeLabel",
+            "diagnostics.events.retarget-summary",
+        ),
+        command=("node", "--test", "tests/headless-retarget-validation.test.mjs"),
+    ),
 )
 
 
