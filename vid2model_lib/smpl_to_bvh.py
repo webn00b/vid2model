@@ -100,9 +100,15 @@ def smpl_poses_to_bvh_channels(
     # in SMPL camera coords). We need to undo this so the skeleton stands
     # upright in BVH Y-up space.
     #
-    # Correction: pre-multiply each frame's root rotation by Rx(π) to flip
-    # from camera-Y-down to world-Y-up.
+    # Root correction: pre-multiply each frame's root rotation by Rx(π) to
+    # flip from camera-Y-down to world-Y-up.
+    #
+    # Body joints: SMPL body pose rotations are parent-relative in the body's
+    # anatomical frame. After correcting the root with Rx(π) the kinematic
+    # chain propagates correctly — body joint rotations do NOT need a
+    # separate coordinate-frame correction.
     _Rx_pi = Rotation.from_euler("X", 180, degrees=True)
+    _root_correction = _Rx_pi
 
     # Center translation and convert coordinate system
     centered_trans = smpl_trans.copy()
@@ -127,7 +133,7 @@ def smpl_poses_to_bvh_channels(
 
         # Correct root rotation: undo SMPL camera-space 180° X flip
         smpl_root_rot = Rotation.from_rotvec(smpl_poses[frame_idx, 0])
-        bvh_root_rot = _Rx_pi * smpl_root_rot
+        bvh_root_rot = _root_correction * smpl_root_rot
         root_rot = bvh_root_rot.as_euler("ZXY", degrees=True)
         frame_channels.extend([
             float(root_trans[0]),
