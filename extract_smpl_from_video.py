@@ -35,6 +35,16 @@ import cv2
 import numpy as np
 import torch
 
+# PyTorch 2.6+ changed weights_only default to True, which breaks omegaconf checkpoints.
+# Monkey-patch torch.load to force weights_only=False for HMR2 checkpoint loading.
+# HMR2 checkpoints come from the official 4D-Humans release — trusted source.
+import torch as _torch
+_orig_torch_load = _torch.load
+def _patched_torch_load(*args, **kwargs):
+    kwargs["weights_only"] = False
+    return _orig_torch_load(*args, **kwargs)
+_torch.load = _patched_torch_load
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract SMPL from video via HMR2.0")
