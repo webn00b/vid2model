@@ -112,8 +112,8 @@ test("headless module keeps VRM humanoid context in machine-readable output", as
     "expected MoonGirl lower-body bend diagnostics to stay non-mirrored"
   );
   assert.ok(
-    (result.diagnostics.events["retarget-summary"]?.lowerBodyRotError || Number.POSITIVE_INFINITY) < 125,
-    "expected lower-body rotation mismatch to improve materially"
+    (result.canonicalComparison?.summary?.lowerBodyRotError || Number.POSITIVE_INFINITY) < 125,
+    "expected lower-body rotation mismatch to improve materially (canonical comparison)"
   );
 });
 
