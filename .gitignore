@@ -54,8 +54,4 @@ node_modules
 .claude/worktrees/
 .codex/
 
-# Video files (large binaries)
-*.mp4
-*.mov
-*.avi
-*.mkv
+
