@@ -2466,7 +2466,7 @@
       setModelFileNameText: (text) => {
         modelFileNameEl.textContent = text;
       },
-      defaultModelName: "6493143135142452442.glb",
+      defaultModelName: "MoonGirl.vrm",
       importMetaUrl: import.meta.url,
     });
 
