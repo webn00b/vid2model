@@ -69,6 +69,8 @@ import {
 } from "./retarget-stage-contract.js";
 import { getBuiltinRigProfile } from "./rig-profiles.js";
 import { installHeadlessNodeRuntime } from "./headless-node-runtime.js";
+import { buildCanonicalMotion } from "./canonical-motion-export.js";
+import { evaluateCanonicalMotion } from "./canonical-motion-solver.js";
 
 const VRM_HUMANOID_BONE_NAMES = [
   "hips",
@@ -1849,6 +1851,29 @@ export async function runHeadlessRetargetValidation({
       : lowerBodyReport?.avgPosErr;
   const lowerBodyRotError =
     Number.isFinite(lowerBodyReport?.avgRotErrDeg) ? lowerBodyReport.avgRotErrDeg : null;
+  const canonicalMotion = buildCanonicalMotion({
+    sourceResult: sourceState.sourceResult,
+    mixer: sourceState.mixer,
+    stage: normalizedStage,
+    canonicalFilter,
+    buildCanonicalBoneMap,
+  });
+  const canonicalComparison = evaluateCanonicalMotion({
+    canonicalMotion,
+    modelRoot: modelState.modelRoot,
+    targetBones: retargetTargetBones,
+    sourceResult: sourceState.sourceResult,
+    sourceMixer: sourceState.mixer,
+    canonicalBoneKey,
+    buildCanonicalBoneMap,
+    collectAlignmentDiagnostics,
+    buildLegChainDiagnostics: chainDiagnostics.buildLegChainDiagnostics,
+    buildArmChainDiagnostics: chainDiagnostics.buildArmChainDiagnostics,
+    buildTorsoChainDiagnostics: chainDiagnostics.buildTorsoChainDiagnostics,
+    alignModelHipsToSource: alignmentTools.alignModelHipsToSource,
+    canonicalFilter,
+    bodyMetricCanonicalFilter,
+  });
 
   const activeProfile = loadRigProfile(modelRigFingerprint, normalizedStage, modelLabel) || cachedRigProfile || null;
   publishRigProfileState(
@@ -1974,6 +1999,7 @@ export async function runHeadlessRetargetValidation({
       attemptDebug: sanitizeForJson(attemptDebug),
       selectionDebug: sanitizeForJson(selectionDebug),
     },
+    canonicalComparison: sanitizeForJson(canonicalComparison),
     diagnostics: {
       events: buildEventMap(diagRecords),
       records: diagRecords,

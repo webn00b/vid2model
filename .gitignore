@@ -43,6 +43,9 @@ output/
 *.bak
 *.swp
 
+# Claude Code worktrees
+.claude/worktrees/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

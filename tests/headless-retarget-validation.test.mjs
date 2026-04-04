@@ -45,6 +45,14 @@ function assertStableHeadlessShape(result, { stage, isVrm }) {
   assert.equal(summary.mode, result.selection.selectedModeLabel);
   assert.equal(summary.liveDelta, result.selection.liveRetarget);
   assert.ok(summary.mappedPairs > 0);
+
+  assert.equal(result.canonicalComparison?.ran, true);
+  assert.equal(result.canonicalComparison?.stage, stage);
+  assert.equal(result.canonicalComparison?.exportFormat, "vid2model.canonical-motion.v1");
+  assert.equal(result.canonicalComparison?.solverFormat, "vid2model.canonical-solve.v1");
+  assert.ok((result.canonicalComparison?.sampleCount || 0) > 0);
+  assert.equal(typeof result.canonicalComparison?.summary?.legsMirrored, "boolean");
+  assert.ok(Number.isFinite(result.canonicalComparison?.summary?.poseError));
 }
 
 function assertNoCrossSideHandMapping(result) {
