@@ -45,6 +45,17 @@ output/
 
 # Beads / Dolt files (added by bd init)
 .dolt/
+.beads/embeddeddolt/
 *.db
 .beads-credential-key
 node_modules
+
+# AI agent working directories
+.claude/worktrees/
+.codex/
+
+# Video files (large binaries)
+*.mp4
+*.mov
+*.avi
+*.mkv
