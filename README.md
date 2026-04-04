@@ -20,11 +20,19 @@
 
 ## Quick Start
 
-Самый короткий путь:
+**MediaPipe (быстро, без GPU):**
 
 ```bash
 cd /Users/fedor/projects/personal/videoToModel/vid2model
 ./convert.sh think.mp4 output/think.bvh
+python3 -m http.server 8080
+```
+
+**4D-Humans / HMR2.0 (нейронка, точнее):**
+
+```bash
+./setup_smpl_backend.sh          # первый раз: ~2GB, только один раз
+./convert_video_smpl.sh think.mp4 output/think.bvh
 python3 -m http.server 8080
 ```
 
@@ -42,6 +50,50 @@ python3 -m http.server 8080
 6. Запустить retarget.
 7. Если результат хороший, нажать `Validate Profile`.
 8. При необходимости экспортировать и зарегистрировать rig profile в репозитории.
+
+## Конвертация через нейронку (4D-Humans / HMR2.0)
+
+Более точный результат за счёт SMPL body model и нейронного pose estimator.
+
+Первый раз — настройка (нужен Python 3.10, скачает ~2GB):
+
+```bash
+./setup_smpl_backend.sh
+```
+
+Запуск:
+
+```bash
+./convert_video_smpl.sh think.mp4 output/think.bvh
+```
+
+С ретаргетом на VRM сразу:
+
+```bash
+./convert_video_smpl.sh think.mp4 output/think.bvh --vrm viewer/models/MoonGirl.vrm output/think.vrm
+```
+
+Схема: `Video → SMPL params (нейронка) → BVH → (опционально VRM)`
+
+### Известные проблемы при setup
+
+**4D-Humans не устанавливается** (ошибка chumpy в pip):
+
+`setup_smpl_backend.sh` пытается поставить `chumpy` из git, но он сломан на Python 3.10+. Скрипт обрабатывает эту ошибку, но fallback не устанавливает сам `hmr2`. Фикс:
+
+```bash
+git clone --filter=blob:none https://github.com/shubham-goel/4D-Humans.git /tmp/4d-humans
+sed -i '' "/'chumpy/d" /tmp/4d-humans/setup.py
+.venv-smpl/bin/pip install /tmp/4d-humans
+```
+
+**`omegaconf` не установлен** — ставим вручную:
+
+```bash
+.venv-smpl/bin/pip install omegaconf
+```
+
+**PyTorch 2.6+ ломает загрузку чекпоинта** (`weights_only=True` по умолчанию) — уже пропатчено в `extract_smpl_from_video.py`, ничего делать не нужно.
 
 ## Конвертация через `convert.sh`
 
