@@ -2257,6 +2257,29 @@
         const result = loader.parse(text);
         clearSource();
 
+        // Normalize Y position: find hips bone and check its first frame Y position
+        const hipsBone = result.skeleton.bones[0];
+        if (hipsBone && result.clip) {
+          const yPositionTrack = result.clip.tracks.find(
+            (track) => track.name.includes("position") &&
+                       (track.name.includes("hips") || track.name === ".position")
+          );
+          if (yPositionTrack && yPositionTrack.values && yPositionTrack.values.length >= 2) {
+            const firstFrameY = yPositionTrack.values[1]; // Y is second value (X, Y, Z)
+            const targetY = 100;
+            const yOffset = targetY - firstFrameY;
+
+            // Adjust all Y position values in all position tracks
+            for (const track of result.clip.tracks) {
+              if (track.name.includes("position")) {
+                for (let i = 1; i < track.values.length; i += 3) {
+                  track.values[i] += yOffset;
+                }
+              }
+            }
+          }
+        }
+
         skeletonObj = new THREE.Group();
         const helper = new THREE.SkeletonHelper(result.skeleton.bones[0]);
         helper.skeleton = result.skeleton;
