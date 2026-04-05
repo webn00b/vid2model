@@ -35,13 +35,17 @@
       border-bottom: 1px solid var(--border);
       background: var(--panel);
     }
-    button, input[type="file"]::file-selector-button {
+    button, input[type="file"]::file-selector-button, select {
       border: 1px solid var(--border);
       background: #fff;
       border-radius: 10px;
       padding: 8px 12px;
       cursor: pointer;
       font-size: 14px;
+      color: var(--text);
+    }
+    select {
+      min-width: 180px;
     }
     .file-group {
       display: flex;
@@ -136,6 +140,9 @@
   <div id="app">
     <div class="toolbar">
       <button id="load-default" class="primary">Load output/think.bvh</button>
+      <select id="animation-list" title="Select animation from available files">
+        <option value="">Choose animation...</option>
+      </select>
       <div class="file-group">
         <span class="file-label">Animation (.bvh)</span>
         <input id="file-input" type="file" accept=".bvh" title="Load animation BVH file (.bvh)" />

@@ -4,6 +4,7 @@ export function setupViewerUi({ elements, ops }) {
     modelInput,
     bvhFileNameEl,
     modelFileNameEl,
+    animationList,
     btnLoadDefault,
     btnAutoSetup,
     btnSaveModelSetup,
@@ -35,6 +36,7 @@ export function setupViewerUi({ elements, ops }) {
     zoomIn,
     zoomOut,
     loadBvhFile,
+    loadBvhFileByName,
     loadModelFile,
     play,
     pause,
@@ -49,6 +51,13 @@ export function setupViewerUi({ elements, ops }) {
     if (!file) return;
     if (bvhFileNameEl) bvhFileNameEl.textContent = file.name;
     await loadBvhFile(file);
+  });
+
+  animationList?.addEventListener("change", async (e) => {
+    const filename = e.target.value;
+    if (!filename) return;
+    if (bvhFileNameEl) bvhFileNameEl.textContent = filename;
+    await loadBvhFileByName(filename);
   });
 
   modelInput?.addEventListener("change", (e) => {
