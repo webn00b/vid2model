@@ -17,6 +17,7 @@ LOWER_BODY_ROTATION_MODE="${LOWER_BODY_ROTATION_MODE:-off}"
 LOOP_MODE="${LOOP_MODE:-off}"
 SKELETON_PROFILE_JSON="${SKELETON_PROFILE_JSON:-}"
 VRM_MODEL="${VRM_MODEL:-}"
+OVERRIDE_FPS="${OVERRIDE_FPS:-}"
 
 python_minor() {
   "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
@@ -94,6 +95,7 @@ Environment knobs:
   LOWER_BODY_ROTATION_MODE=off|invert|yaw180  Extra lower-body source rotation correction.
   LOOP_MODE=off|auto|force          Extract a cyclic loop window from the cleaned motion.
   SKELETON_PROFILE_JSON=path        Override BVH rest offsets using a model skeleton profile JSON.
+  OVERRIDE_FPS=N                    Override video FPS (auto-detected from file if not set).
   VRM_MODEL=path                    Retarget onto VRM model (same as --vrm).
 USAGE
 }
@@ -243,6 +245,9 @@ if [[ -n "$LOOP_MODE" ]]; then
 fi
 if [[ -n "$SKELETON_PROFILE_JSON" ]]; then
   CMD+=(--skeleton-profile-json "$SKELETON_PROFILE_JSON")
+fi
+if [[ -n "$OVERRIDE_FPS" ]]; then
+  CMD+=(--override-fps "$OVERRIDE_FPS")
 fi
 
 "${CMD[@]}"
