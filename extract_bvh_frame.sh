@@ -110,6 +110,10 @@ header_end = frames_idx + 2
 frame_data_start = header_end
 target_frame_line = lines[frame_data_start + frame_idx]
 
+# Ensure frame line ends with newline
+if not target_frame_line.endswith('\n'):
+    target_frame_line = target_frame_line + '\n'
+
 # Build output BVH
 output_lines = []
 output_lines.extend(lines[:header_end])
