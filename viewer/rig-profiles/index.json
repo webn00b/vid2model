@@ -1,4 +1,23 @@
 {
   "format": "vid2model.rig-profile-manifest.v1",
-  "profiles": []
+  "profiles": [
+    {
+      "modelFingerprint": "auto:poklon-single-from-video",
+      "modelLabel": "poklon-single-from-video.bvh",
+      "stage": "body",
+      "path": "./model.body.rig-profile.json"
+    },
+    {
+      "modelFingerprint": "auto:poklon-single",
+      "modelLabel": "poklon-single.bvh",
+      "stage": "body",
+      "path": "./model.body.rig-profile.json"
+    },
+    {
+      "modelFingerprint": "auto:poklon",
+      "modelLabel": "poklon.bvh",
+      "stage": "body",
+      "path": "./model.body.rig-profile.json"
+    }
+  ]
 }
