@@ -67,6 +67,7 @@
       resolvedTrackCountForTarget,
     } from "./modules/retarget-helpers.js";
     import {
+      angleBetweenWorldSegments,
       createViewerChainDiagnostics,
       getPreferredChildBone as getPreferredChildBoneModule,
       getPrimaryChildBone as getPrimaryChildBoneModule,
