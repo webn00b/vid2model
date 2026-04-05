@@ -35,6 +35,7 @@ class CliOptions:
     root_yaw_offset_deg: float
     lower_body_rotation_mode: str
     loop_mode: str
+    override_fps: float | None
     preset: str
 
 
@@ -254,6 +255,8 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
     root_yaw_offset_deg = float(_merge_config_value(args, cfg, "root_yaw_offset_deg", 0.0))
     lower_body_rotation_mode = str(_merge_config_value(args, cfg, "lower_body_rotation_mode", "off")).strip().lower()
     loop_mode = str(_merge_config_value(args, cfg, "loop_mode", preset_defaults.get("loop_mode", "off"))).strip().lower()
+    override_fps_value = _merge_config_value(args, cfg, "override_fps", None)
+    override_fps = float(override_fps_value) if override_fps_value else None
 
     pose_corrections = build_pose_correction_profile(cfg.get("pose_corrections"))
     pose_corrections = replace(
@@ -335,6 +338,7 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
         root_yaw_offset_deg=root_yaw_offset_deg,
         lower_body_rotation_mode=lower_body_rotation_mode,
         loop_mode=loop_mode,
+        override_fps=override_fps,
         preset=preset,
     )
 
