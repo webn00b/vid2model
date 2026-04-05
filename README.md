@@ -121,6 +121,41 @@ sed -i '' "/'chumpy/d" /tmp/4d-humans/setup.py
 2. обновляет `pip`
 3. ставит зависимости из `requirements.txt`
 
+### Автоматическое определение FPS видео (рекомендуется)
+
+Если OpenCV неправильно определяет frame rate (например, видео 60fps генерирует BVH в 2x медленнее), используйте `convert_auto_fps.sh`:
+
+```bash
+./convert_auto_fps.sh think.mp4 output/think.bvh
+```
+
+Скрипт автоматически:
+1. детектирует FPS из метаданных видео (ffprobe)
+2. передаёт его в `convert.sh`
+3. генерирует BVH с правильной длительностью
+
+Дополнительные форматы:
+
+```bash
+./convert_auto_fps.sh think.mp4 output/think.bvh --all --fbx
+```
+
+**Или вручную через флаг:**
+
+```bash
+OVERRIDE_FPS=60 ./convert.sh think.mp4 output/think.bvh
+```
+
+Полезно если автодетекция не сработала:
+
+```bash
+# Проверить FPS видео
+ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of default=noprint_wrappers=1:nokey=1 video.mp4
+
+# Использовать явно
+OVERRIDE_FPS=60 ./convert.sh video.mp4 output/video.bvh
+```
+
 ## Прямой запуск CLI
 
 Пример с quality diagnostics:
