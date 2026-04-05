@@ -2289,7 +2289,13 @@
           syncSourceDisplayToModel();
           fitToSkeleton(modelRoot);
         } else {
-          fitToSkeleton(skeletonObj);
+          // For source skeleton, use fixed camera position to avoid issues with varying skeleton heights
+          const box = new THREE.Box3().setFromObject(skeletonObj);
+          const center = new THREE.Vector3();
+          box.getCenter(center);
+          camera.position.set(center.x + 260, 200, center.z + 260);
+          controls.target.set(center.x, 100, center.z);
+          controls.update();
         }
         setStatus(`Loaded: ${label} (${Math.round(currentClip.duration * 100) / 100}s)`);
         if (modelSkinnedMesh) {
