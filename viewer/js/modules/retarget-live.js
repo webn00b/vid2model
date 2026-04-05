@@ -971,16 +971,9 @@ export function applyLiveRetargetPose({
     if (!pair.isHips && pair.useWorldRestTransfer && pair.target.parent) {
       pair.source.getWorldQuaternion(deltaQ);
       deltaQ.multiply(pair.sourceRestWorldQInv).normalize();
-      // For VRM models, targetRestWorldQ includes the modelRoot's base Y-rotation (π).
-      // The source delta is computed in the non-rotated frame, so we need to invert it
-      // to apply correctly in the rotated frame.
-      if (Math.abs(baseYaw) > 0.1) {
-        deltaQ.invert().normalize();
-        parentWorldQ.setFromAxisAngle(axisY, -baseYaw);
-        targetWorldQ.copy(deltaQ).multiply(parentWorldQ).multiply(pair.targetRestWorldQ).normalize();
-      } else {
-        targetWorldQ.copy(deltaQ).multiply(pair.targetRestWorldQ).normalize();
-      }
+      // For VRM models, hips are already compensated with baseYaw via yawOffset.
+      // Legs inherit correct rotation through parent chain, so don't apply baseYaw here.
+      targetWorldQ.copy(deltaQ).multiply(pair.targetRestWorldQ).normalize();
       pair.target.parent.getWorldQuaternion(parentWorldQ);
       pair.target.quaternion.copy(parentWorldQ.invert().multiply(targetWorldQ)).normalize();
       pair.target.position.copy(pair.targetRestPos);
