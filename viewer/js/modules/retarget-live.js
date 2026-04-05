@@ -861,6 +861,25 @@ export function buildLiveRetargetPlan({
   } else if (absRawYaw > THREE.MathUtils.degToRad(120)) {
     yawOffset = Math.sign(yawOffset || 1) * Math.PI;
   }
+  // Account for modelRoot base orientation (e.g. VRM models loaded with rotation.y = π).
+  // estimateFacingYawOffset measures geometric facing via bone positions, which are symmetric
+  // even after modelRoot is Y-rotated — so the 180° offset is invisible to it.
+  // Without this compensation the hips rotation delta is applied in a frame that differs from
+  // the source frame by the modelRoot Y angle, causing a matching visual rotation mismatch.
+  if (modelRoot) {
+    const baseQ = modelRoot.userData?.__baseQuaternion;
+    if (baseQ?.isQuaternion) {
+      // Extract Y-axis rotation from the base quaternion.
+      // For a pure-Y rotation Ry(α): q = (0, sin(α/2), 0, cos(α/2)), so α = 2*atan2(q.y, q.w).
+      const baseYaw = 2 * Math.atan2(baseQ.y, baseQ.w);
+      if (Math.abs(baseYaw) > 0.1) {
+        yawOffset = Math.atan2(
+          Math.sin(yawOffset + baseYaw),
+          Math.cos(yawOffset + baseYaw)
+        );
+      }
+    }
+  }
   if (Number.isFinite(cachedProfile?.posScale) && cachedProfile.posScale > 1e-6) {
     posScale = cachedProfile.posScale;
   }
