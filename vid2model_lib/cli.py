@@ -133,6 +133,11 @@ def parse_args() -> argparse.Namespace:
         choices=["off", "auto", "force"],
         help="Optional loop extraction for cyclic clips.",
     )
+    parser.add_argument(
+        "--override-fps",
+        type=float,
+        help="Override video FPS (auto-detected from file if not specified).",
+    )
     parser.add_argument("--check-tools", action="store_true", help="Validate local toolchain and exit.")
     return parser.parse_args()
 
@@ -359,6 +364,7 @@ def main() -> int:
         root_yaw_offset_deg=options.root_yaw_offset_deg,
         lower_body_rotation_mode=options.lower_body_rotation_mode,
         loop_mode=options.loop_mode,
+        override_fps=options.override_fps,
         include_source_stage_diagnostics=options.output_diag_json is not None,
     )
     quality = diagnostics.get("quality")

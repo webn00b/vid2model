@@ -366,6 +366,7 @@ def collect_detected_pose_samples(
     opencv_enhance: str = "off",
     max_frame_side: int = 0,
     roi_crop: str = "off",
+    override_fps: float = None,
 ) -> Tuple[float, List[Optional[Dict[str, np.ndarray]]], List[Dict[str, np.ndarray]], Dict[str, Any]]:
     import cv2
 
@@ -379,9 +380,12 @@ def collect_detected_pose_samples(
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open input video: {input_path}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if not fps or fps <= 1e-6:
-        fps = 30.0
+    if override_fps is not None and override_fps > 0:
+        fps = override_fps
+    else:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or fps <= 1e-6:
+            fps = 30.0
 
     detect_pose, close_pose, pose_backend = _create_pose_detector(
         model_complexity=model_complexity,

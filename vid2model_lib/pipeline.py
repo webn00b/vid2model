@@ -731,6 +731,7 @@ def convert_video_to_bvh(
     root_yaw_offset_deg: float = 0.0,
     lower_body_rotation_mode: str = "off",
     loop_mode: str = "off",
+    override_fps: Optional[float] = None,
     include_source_stage_diagnostics: bool = False,
 ) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]], Dict[str, Any]]:
     fps, frames_pts_raw, detected_samples, scan_stats = collect_detected_pose_samples(
@@ -742,6 +743,7 @@ def convert_video_to_bvh(
         opencv_enhance=opencv_enhance,
         max_frame_side=max_frame_side,
         roi_crop=roi_crop,
+        override_fps=override_fps,
     )
     detected_count = scan_stats["detected"]
     roi_used_count = scan_stats["roi_used"]
