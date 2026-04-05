@@ -940,6 +940,13 @@ export function applyLiveRetargetPose({
   if (Math.abs(yaw) > 1e-5) {
     yawQ.setFromAxisAngle(liveAxisY || new THREE.Vector3(0, 1, 0), yaw);
   }
+  // Pre-compute VRM base yaw compensation for world transfer bones (feet, etc)
+  let baseYaw = 0;
+  const baseQ = modelRoot?.userData?.__baseQuaternion;
+  if (baseQ?.isQuaternion) {
+    baseYaw = 2 * Math.atan2(baseQ.y, baseQ.w);
+  }
+  const axisY = liveAxisY || new THREE.Vector3(0, 1, 0);
   if (typeof window !== "undefined") {
     window.__vid2modelFootCorrectionDebug = [];
   }
@@ -964,7 +971,16 @@ export function applyLiveRetargetPose({
     if (!pair.isHips && pair.useWorldRestTransfer && pair.target.parent) {
       pair.source.getWorldQuaternion(deltaQ);
       deltaQ.multiply(pair.sourceRestWorldQInv).normalize();
-      targetWorldQ.copy(deltaQ).multiply(pair.targetRestWorldQ).normalize();
+      // For VRM models, targetRestWorldQ includes the modelRoot's base Y-rotation (π).
+      // The source delta is computed in the non-rotated frame, so we need to invert it
+      // to apply correctly in the rotated frame.
+      if (Math.abs(baseYaw) > 0.1) {
+        deltaQ.invert().normalize();
+        parentWorldQ.setFromAxisAngle(axisY, -baseYaw);
+        targetWorldQ.copy(deltaQ).multiply(parentWorldQ).multiply(pair.targetRestWorldQ).normalize();
+      } else {
+        targetWorldQ.copy(deltaQ).multiply(pair.targetRestWorldQ).normalize();
+      }
       pair.target.parent.getWorldQuaternion(parentWorldQ);
       pair.target.quaternion.copy(parentWorldQ.invert().multiply(targetWorldQ)).normalize();
       pair.target.position.copy(pair.targetRestPos);
@@ -979,11 +995,7 @@ export function applyLiveRetargetPose({
     if (pair.hasRestCorrection) {
       deltaQ.premultiply(pair.restCorrectionQ).multiply(pair.restCorrectionQInv);
     }
-    if (pair.isHips && Math.abs(yaw) > 1e-5) {
-      pair.target.quaternion.copy(pair.targetRestQ).multiply(yawQ).multiply(deltaQ).normalize();
-    } else {
-      pair.target.quaternion.copy(pair.targetRestQ).multiply(deltaQ).normalize();
-    }
+    pair.target.quaternion.copy(pair.targetRestQ).multiply(deltaQ).normalize();
     if (pair.isHips) {
       deltaV.copy(pair.source.position).sub(pair.sourceRestPos).multiplyScalar(plan.posScale);
       if (Math.abs(yaw) > 1e-5) {
