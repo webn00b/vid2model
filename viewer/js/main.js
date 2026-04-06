@@ -2288,6 +2288,19 @@
         if (modelRoot && modelSkinnedMesh) {
           syncSourceDisplayToModel();
           fitToSkeleton(modelRoot);
+          // Log model position after animation switch
+          {
+            const _wp = new THREE.Vector3();
+            let _minY = Infinity, _minName = "";
+            for (const bone of modelSkinnedMesh.skeleton.bones) {
+              bone.getWorldPosition(_wp);
+              if (_wp.y < _minY) { _minY = _wp.y; _minName = bone.name; }
+            }
+            console.log("[ground-snap/anim-switch] modelRoot.position.y=", modelRoot.position.y,
+              "modelRoot.__basePosition.y=", modelRoot.userData.__basePosition?.y,
+              "minBoneY=", _minY, "(bone:", _minName, ")",
+              "skeletonObj.position.y=", skeletonObj?.position.y);
+          }
         } else {
           // Apply first frame so bones have correct world positions before measuring
           mixer.update(0);
