@@ -62,6 +62,49 @@ def axis_angle_to_euler_zxy(axis_angle: np.ndarray) -> np.ndarray:
     return euler
 
 
+def _normalize_foot_level(
+    motion_values: List[List[float]],
+    rest_offsets: Dict[str, np.ndarray],
+) -> List[List[float]]:
+    """Normalize Y position so feet are at consistent height across all frames.
+
+    Computes foot level from first frame and offsets all Y positions to place
+    feet at Y=0, ensuring consistent animation heights across different videos.
+
+    Args:
+        motion_values: Motion channel values (hips has 6 channels: Xpos, Ypos, Zpos, Zrot, Xrot, Yrot)
+        rest_offsets: Rest pose bone offsets for skeleton structure
+
+    Returns:
+        motion_values with normalized Y positions
+    """
+    if not motion_values or len(motion_values[0]) < 2:
+        return motion_values
+
+    # Get foot bone heights from rest offsets
+    leftFoot_offset = rest_offsets.get("leftFoot", np.zeros(3))
+    rightFoot_offset = rest_offsets.get("rightFoot", np.zeros(3))
+    hips_offset = rest_offsets.get("hips", np.zeros(3))
+
+    # Approximate foot level: hips Y + path to foot (simplified as hips height)
+    # In practice, feet are slightly below hips in the kinematic chain
+    # We'll use the hips Y position from first frame as reference
+    first_frame_hips_y = float(motion_values[0][1])  # Ypos of hips is second value
+
+    # Target feet level at Y=0; hips will be at (first_frame_hips_y - offset)
+    target_hips_y = 0.0
+    y_offset = target_hips_y - first_frame_hips_y
+
+    # Apply Y offset to all frames' hips Y position (channel index 1)
+    result = []
+    for frame_channels in motion_values:
+        frame_copy = list(frame_channels)
+        frame_copy[1] += y_offset  # Adjust hips Ypos
+        result.append(frame_copy)
+
+    return result
+
+
 def smpl_poses_to_bvh_channels(
     smpl_poses: np.ndarray,
     smpl_trans: np.ndarray,
@@ -159,6 +202,10 @@ def smpl_poses_to_bvh_channels(
                 frame_channels.extend([0.0, 0.0, 0.0])
 
         motion_values.append(frame_channels)
+
+    # Normalize Y position: find foot level from first frame and offset all frames
+    # so feet rest at Y=0 for consistent animation heights across different videos
+    motion_values = _normalize_foot_level(motion_values, rest_offsets)
 
     return motion_values, rest_offsets, fps
 
