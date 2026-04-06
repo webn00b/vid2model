@@ -102,19 +102,30 @@ def extract_hand_points(
     # Hand WRIST landmark position in hand-relative frame
     wrist_hand_rel = hand_lms["wrist"]
 
-    # Compute scale: distance from wrist to middle_tip in hand-relative frame
-    # compared to forearm length gives us scaling factor
-    if "middle_tip" in hand_lms:
-        wrist_to_middle = np.linalg.norm(hand_lms["middle_tip"] - wrist_hand_rel)
-        # Expected hand length is roughly 0.3 of forearm length (hand + fingers)
-        # MediaPipe hand landmarks span about 0.8-1.0 normalized units
-        expected_hand_scale = max(forearm_length * 0.3, 0.01)
-        if wrist_to_middle > 1e-6:
-            scale = expected_hand_scale / wrist_to_middle
-        else:
-            scale = expected_hand_scale
+    # Compute scale: use palm size (wrist to MCP) as basis
+    # MediaPipe MCP landmarks: index=5, middle=9, ring=13
+    palm_distances = []
+    for idx in [5, 9, 13]:  # index, middle, ring MCP
+        if idx < len(hand_landmarks):
+            mcp_pos = _landmark_to_array(hand_landmarks[idx])
+            dist = np.linalg.norm(mcp_pos - wrist_hand_rel)
+            if dist > 1e-6:
+                palm_distances.append(dist)
+
+    if palm_distances:
+        # Average palm distance (wrist to MCP) - this is stable across poses
+        avg_palm_dist = np.mean(palm_distances)
+        # Palm is roughly 0.3-0.4 of forearm length
+        expected_palm_scale = max(forearm_length * 0.4, 0.01)
+        scale = expected_palm_scale / avg_palm_dist if avg_palm_dist > 1e-6 else expected_palm_scale
     else:
-        scale = max(forearm_length * 0.3, 0.01)
+        # Fallback: use middle finger tip distance
+        if "middle_tip" in hand_lms:
+            wrist_to_middle = np.linalg.norm(hand_lms["middle_tip"] - wrist_hand_rel)
+            expected_hand_scale = max(forearm_length * 0.4, 0.01)
+            scale = expected_hand_scale / wrist_to_middle if wrist_to_middle > 1e-6 else expected_hand_scale
+        else:
+            scale = max(forearm_length * 0.4, 0.01)
 
     # Compute hand orientation vector (from wrist towards middle finger)
     if "middle_tip" in hand_lms:
