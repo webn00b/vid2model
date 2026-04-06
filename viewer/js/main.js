@@ -2289,7 +2289,25 @@
           syncSourceDisplayToModel();
           fitToSkeleton(modelRoot);
         } else {
-          // For source skeleton only, fit camera to skeleton bounds
+          // Apply first frame so bones have correct world positions before measuring
+          mixer.update(0);
+          skeletonObj.updateMatrixWorld(true);
+
+          // Shift skeletonObj so foot-level bones sit at Y=0 (on the grid)
+          const footKeys = new Set(["leftFoot", "rightFoot", "leftToes", "rightToes"]);
+          const footWorldPos = new THREE.Vector3();
+          let minFootY = Infinity;
+          for (const bone of result.skeleton.bones) {
+            if (footKeys.has(canonicalBoneKey(bone.name))) {
+              bone.getWorldPosition(footWorldPos);
+              if (footWorldPos.y < minFootY) minFootY = footWorldPos.y;
+            }
+          }
+          if (Number.isFinite(minFootY)) {
+            skeletonObj.position.y -= minFootY;
+            skeletonObj.updateMatrixWorld(true);
+          }
+
           fitToSkeleton(skeletonObj);
         }
         setStatus(`Loaded: ${label} (${Math.round(currentClip.duration * 100) / 100}s)`);
