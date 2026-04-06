@@ -106,14 +106,15 @@ def extract_hand_points(
     # compared to forearm length gives us scaling factor
     if "middle_tip" in hand_lms:
         wrist_to_middle = np.linalg.norm(hand_lms["middle_tip"] - wrist_hand_rel)
-        # Expected hand length is roughly 0.7-0.8 of forearm length
-        expected_hand_scale = max(forearm_length * 0.7, 0.01)
+        # Expected hand length is roughly 0.5 of forearm length (hand + fingers)
+        # MediaPipe hand landmarks span about 0.8 normalized units
+        expected_hand_scale = max(forearm_length * 0.5, 0.01)
         if wrist_to_middle > 1e-6:
             scale = expected_hand_scale / wrist_to_middle
         else:
             scale = expected_hand_scale
     else:
-        scale = max(forearm_length * 0.7, 0.01)
+        scale = max(forearm_length * 0.5, 0.01)
 
     # Compute hand orientation vector (from wrist towards middle finger)
     if "middle_tip" in hand_lms:
