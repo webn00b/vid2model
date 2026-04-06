@@ -2295,16 +2295,19 @@
 
           // Shift skeletonObj so foot-level bones sit at Y=0 (on the grid)
           const footKeys = new Set(["leftFoot", "rightFoot", "leftToes", "rightToes"]);
-          const footWorldPos = new THREE.Vector3();
+          const boneWorldPos = new THREE.Vector3();
           let minFootY = Infinity;
+          let minAnyY = Infinity;
           for (const bone of result.skeleton.bones) {
+            bone.getWorldPosition(boneWorldPos);
+            if (boneWorldPos.y < minAnyY) minAnyY = boneWorldPos.y;
             if (footKeys.has(canonicalBoneKey(bone.name))) {
-              bone.getWorldPosition(footWorldPos);
-              if (footWorldPos.y < minFootY) minFootY = footWorldPos.y;
+              if (boneWorldPos.y < minFootY) minFootY = boneWorldPos.y;
             }
           }
-          if (Number.isFinite(minFootY)) {
-            skeletonObj.position.y -= minFootY;
+          const groundY = Number.isFinite(minFootY) ? minFootY : minAnyY;
+          if (Number.isFinite(groundY)) {
+            skeletonObj.position.y -= groundY;
             skeletonObj.updateMatrixWorld(true);
           }
 
