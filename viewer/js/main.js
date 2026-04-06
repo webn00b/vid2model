@@ -2337,6 +2337,17 @@
         setStatus(`Loaded: ${label} (${Math.round(currentClip.duration * 100) / 100}s)`);
         if (modelSkinnedMesh) {
           applyBvhToModel();
+          // Log AFTER retargeting to see where bones ended up
+          {
+            const _wp2 = new THREE.Vector3();
+            let _minY2 = Infinity, _minName2 = "";
+            for (const bone of modelSkinnedMesh.skeleton.bones) {
+              bone.getWorldPosition(_wp2);
+              if (_wp2.y < _minY2) { _minY2 = _wp2.y; _minName2 = bone.name; }
+            }
+            console.log("[ground-snap/after-retarget] modelRoot.position.y=", modelRoot.position.y,
+              "minBoneY=", _minY2, "(bone:", _minName2, ")");
+          }
         }
       } catch (err) {
         console.error(err);
