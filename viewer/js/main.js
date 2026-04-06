@@ -74,6 +74,7 @@
     } from "./modules/viewer-chain-diagnostics.js";
     import { createViewerBoneLabels } from "./modules/viewer-bone-labels.js";
     import { createViewerAlignmentTools } from "./modules/viewer-alignment.js";
+    import { computeBvhGroundY } from "./modules/viewer-alignment.js";
     import { createViewerRuntimeDiagnostics } from "./modules/viewer-runtime-diagnostics.js";
     import { createViewerSourceAxesDebug } from "./modules/viewer-source-axes-debug.js";
     import {
@@ -2246,6 +2247,17 @@
           modelSkinnedMesh,
           sourceResult,
         });
+
+        // Evaluation code (collectAlignmentDiagnostics, measureBodyErr, probeMotionForBindings)
+        // displaces modelRoot via AnimationMixer root motion tracks. Reset it here so the
+        // model sits at its base position for playback.
+        resetModelRootOrientation();
+        if (liveRetarget) {
+          applyLiveRetargetPose(liveRetarget);
+        }
+        if (sourceResult && modelSkinnedMesh) {
+          syncSourceDisplayToModel();
+        }
       } catch (err) {
         console.error(err);
         setStatus("Retarget failed. Check model rig names.");
@@ -2288,48 +2300,21 @@
         if (modelRoot && modelSkinnedMesh) {
           syncSourceDisplayToModel();
           fitToSkeleton(modelRoot);
-          // Log model position after animation switch
-          {
-            const _wp = new THREE.Vector3();
-            let _minY = Infinity, _minName = "";
-            for (const bone of modelSkinnedMesh.skeleton.bones) {
-              bone.getWorldPosition(_wp);
-              if (_wp.y < _minY) { _minY = _wp.y; _minName = bone.name; }
-            }
-            console.log("[ground-snap/anim-switch] modelRoot.position.y=", modelRoot.position.y,
-              "modelRoot.__basePosition.y=", modelRoot.userData.__basePosition?.y,
-              "minBoneY=", _minY, "(bone:", _minName, ")",
-              "skeletonObj.position.y=", skeletonObj?.position.y);
-          }
         } else {
           // Apply first frame so bones have correct world positions before measuring
           mixer.update(0);
           skeletonObj.updateMatrixWorld(true);
 
-          // Shift skeletonObj so foot-level bones sit at Y=0 (on the grid)
-          const footKeys = new Set(["leftFoot", "rightFoot", "leftToes", "rightToes"]);
-          const boneWorldPos = new THREE.Vector3();
-          let minFootY = Infinity;
-          let minAnyY = Infinity;
-          let minFootBoneName = "";
-          let minAnyBoneName = "";
-          for (const bone of result.skeleton.bones) {
-            const ckey = canonicalBoneKey(bone.name);
-            bone.getWorldPosition(boneWorldPos);
-            if (boneWorldPos.y < minAnyY) { minAnyY = boneWorldPos.y; minAnyBoneName = bone.name; }
-            if (footKeys.has(ckey)) {
-              if (boneWorldPos.y < minFootY) { minFootY = boneWorldPos.y; minFootBoneName = bone.name; }
-            }
-          }
-          const groundY = Number.isFinite(minFootY) ? minFootY : minAnyY;
-          console.log("[ground-snap/bvh] skeletonObj.position.y=", skeletonObj.position.y,
-            "minFootY=", minFootY, "(bone:", minFootBoneName, ")",
-            "minAnyY=", minAnyY, "(bone:", minAnyBoneName, ")",
-            "=> groundY=", groundY);
+          // Shift skeletonObj so the clip's lowest support point sits on the grid.
+          const groundY = computeBvhGroundY({
+            bones: result.skeleton.bones,
+            mixer,
+            clip: currentClip,
+            canonicalBoneKey,
+          });
           if (Number.isFinite(groundY)) {
             skeletonObj.position.y -= groundY;
             skeletonObj.updateMatrixWorld(true);
-            console.log("[ground-snap/bvh] snapped, new skeletonObj.position.y=", skeletonObj.position.y);
           }
 
           fitToSkeleton(skeletonObj);
@@ -2702,10 +2687,15 @@
       const dt = clock.getDelta();
         if (isPlaying && !isScrubbing) {
           if (mixer) mixer.update(dt);
-          for (const mix of modelMixers) {
-            mix.update(dt);
+          // In live-retarget mode, applyLiveRetargetPose drives all target bones directly.
+          // Running modelMixers would displace modelRoot via root-motion tracks each frame.
+          if (!liveRetarget) {
+            for (const mix of modelMixers) {
+              mix.update(dt);
+            }
           }
         if (liveRetarget) {
+          resetModelRootOrientation();
           applyLiveRetargetPose(liveRetarget);
         }
         if (bodyLengthCalibration && !liveRetarget) {
@@ -2717,7 +2707,12 @@
         if (fingerLengthCalibration && !liveRetarget) {
           applyFingerLengthCalibration(fingerLengthCalibration, modelRoot);
         }
-        alignModelHipsToSource(false);
+        // In live retarget mode, applyLiveRetargetPose already positions hips correctly
+        // via posScale. alignModelHipsToSource would override it with raw world delta,
+        // lifting the model off the ground.
+        if (!liveRetarget) {
+          alignModelHipsToSource(false);
+        }
         }
 
         if (hasSourceOverlay()) {

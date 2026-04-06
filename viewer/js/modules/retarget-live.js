@@ -1006,16 +1006,6 @@ export function applyLiveRetargetPose({
         deltaV.applyQuaternion(yawQ);
       }
       pair.target.position.copy(pair.targetRestPos).add(deltaV);
-      if (typeof window !== "undefined" && window.__dbgHipsOnce) {
-        window.__dbgHipsOnce = false;
-        console.log("[hips-retarget] source.position.y=", pair.source.position.y,
-          "sourceRestPos.y=", pair.sourceRestPos.y,
-          "deltaV.y=", deltaV.y,
-          "targetRestPos.y=", pair.targetRestPos.y,
-          "=> target.position.y=", pair.target.position.y,
-          "target.name=", pair.target.name,
-          "posScale=", plan.posScale);
-      }
     } else {
       pair.target.position.copy(pair.targetRestPos);
     }
