@@ -18,6 +18,7 @@ LOOP_MODE="${LOOP_MODE:-off}"
 SKELETON_PROFILE_JSON="${SKELETON_PROFILE_JSON:-}"
 VRM_MODEL="${VRM_MODEL:-}"
 OVERRIDE_FPS="${OVERRIDE_FPS:-}"
+HAND_TRACKING="${HAND_TRACKING:-off}"
 
 python_minor() {
   "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
@@ -130,6 +131,14 @@ if [[ "$1" == "--auto" ]]; then
     case "$1" in
       --all) AUTO_ALL=1 ;;
       --fbx) AUTO_FBX=1 ;;
+      --hand-tracking)
+        shift
+        if [[ $# -lt 1 ]]; then
+          echo "--hand-tracking requires a value (off|auto)" >&2
+          exit 2
+        fi
+        HAND_TRACKING="$1"
+        ;;
       --vrm)
         shift
         if [[ $# -lt 1 ]]; then
@@ -177,11 +186,47 @@ else
   fi
   INPUT="$1"
   OUTPUT_BVH="$2"
-  OUTPUT_JSON="${3:-}"
-  OUTPUT_CSV="${4:-}"
-  OUTPUT_NPZ="${5:-}"
-  OUTPUT_TRC="${6:-}"
-  OUTPUT_FBX="${7:-}"
+  shift 2
+
+  # Parse remaining positional and flag arguments
+  OUTPUT_JSON=""
+  OUTPUT_CSV=""
+  OUTPUT_NPZ=""
+  OUTPUT_TRC=""
+  OUTPUT_FBX=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --hand-tracking)
+        shift
+        if [[ $# -lt 1 ]]; then
+          echo "--hand-tracking requires a value (off|auto)" >&2
+          exit 2
+        fi
+        HAND_TRACKING="$1"
+        ;;
+      --*)
+        echo "Unknown option: $1" >&2
+        exit 2
+        ;;
+      *)
+        # Positional arguments (output files)
+        if [[ -z "$OUTPUT_JSON" ]]; then
+          OUTPUT_JSON="$1"
+        elif [[ -z "$OUTPUT_CSV" ]]; then
+          OUTPUT_CSV="$1"
+        elif [[ -z "$OUTPUT_NPZ" ]]; then
+          OUTPUT_NPZ="$1"
+        elif [[ -z "$OUTPUT_TRC" ]]; then
+          OUTPUT_TRC="$1"
+        elif [[ -z "$OUTPUT_FBX" ]]; then
+          OUTPUT_FBX="$1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
   if [[ -n "$OUTPUT_BVH" ]]; then
     OUTPUT_DIAG_JSON="${OUTPUT_BVH%.*}.diag.json"
   fi
@@ -248,6 +293,9 @@ if [[ -n "$SKELETON_PROFILE_JSON" ]]; then
 fi
 if [[ -n "$OVERRIDE_FPS" ]]; then
   CMD+=(--override-fps "$OVERRIDE_FPS")
+fi
+if [[ -n "$HAND_TRACKING" ]]; then
+  CMD+=(--hand-tracking "$HAND_TRACKING")
 fi
 
 "${CMD[@]}"
