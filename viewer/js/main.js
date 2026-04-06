@@ -2298,17 +2298,25 @@
           const boneWorldPos = new THREE.Vector3();
           let minFootY = Infinity;
           let minAnyY = Infinity;
+          let minFootBoneName = "";
+          let minAnyBoneName = "";
           for (const bone of result.skeleton.bones) {
+            const ckey = canonicalBoneKey(bone.name);
             bone.getWorldPosition(boneWorldPos);
-            if (boneWorldPos.y < minAnyY) minAnyY = boneWorldPos.y;
-            if (footKeys.has(canonicalBoneKey(bone.name))) {
-              if (boneWorldPos.y < minFootY) minFootY = boneWorldPos.y;
+            if (boneWorldPos.y < minAnyY) { minAnyY = boneWorldPos.y; minAnyBoneName = bone.name; }
+            if (footKeys.has(ckey)) {
+              if (boneWorldPos.y < minFootY) { minFootY = boneWorldPos.y; minFootBoneName = bone.name; }
             }
           }
           const groundY = Number.isFinite(minFootY) ? minFootY : minAnyY;
+          console.log("[ground-snap/bvh] skeletonObj.position.y=", skeletonObj.position.y,
+            "minFootY=", minFootY, "(bone:", minFootBoneName, ")",
+            "minAnyY=", minAnyY, "(bone:", minAnyBoneName, ")",
+            "=> groundY=", groundY);
           if (Number.isFinite(groundY)) {
             skeletonObj.position.y -= groundY;
             skeletonObj.updateMatrixWorld(true);
+            console.log("[ground-snap/bvh] snapped, new skeletonObj.position.y=", skeletonObj.position.y);
           }
 
           fitToSkeleton(skeletonObj);
