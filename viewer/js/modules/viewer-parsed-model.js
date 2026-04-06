@@ -70,6 +70,26 @@ export function createViewerParsedModelApplier({
       rootBone.userData.__retargetBasePosition = rootBone.position.clone();
     }
 
+    // Snap lowest bone to Y=0 so model rests on the grid.
+    // Must happen before __basePosition is saved (it's the retarget origin).
+    {
+      state.modelRoot.updateMatrixWorld(true);
+      const _boneWP = new THREE.Vector3();
+      let _minBoneY = Infinity;
+      for (const bone of state.modelSkinnedMesh.skeleton.bones) {
+        bone.getWorldPosition(_boneWP);
+        if (_boneWP.y < _minBoneY) _minBoneY = _boneWP.y;
+      }
+      if (Number.isFinite(_minBoneY) && Math.abs(_minBoneY) > 0.001) {
+        state.modelRoot.position.y -= _minBoneY;
+        state.modelRoot.updateMatrixWorld(true);
+        state.modelRoot.userData.__basePosition = state.modelRoot.position.clone();
+        if (rootBone && rootBone !== state.modelRoot) {
+          rootBone.userData.__retargetBasePosition = rootBone.position.clone();
+        }
+      }
+    }
+
     const seenBones = new Set();
     for (const mesh of state.modelSkinnedMeshes) {
       for (const bone of mesh.skeleton?.bones || []) {
