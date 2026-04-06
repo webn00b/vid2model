@@ -66,10 +66,11 @@ def _normalize_foot_level(
     motion_values: List[List[float]],
     rest_offsets: Dict[str, np.ndarray],
 ) -> List[List[float]]:
-    """Normalize Y position so feet are at consistent height across all frames.
+    """Normalize Y position so feet are at Y=0 across all animations.
 
-    Computes foot level from first frame and offsets all Y positions to place
-    feet at Y=0, ensuring consistent animation heights across different videos.
+    Computes the foot level from rest offsets (hips → upper leg → lower leg → foot)
+    and offsets all frames so feet sit at Y=0. Uses median hips Y as reference
+    so one unusual frame doesn't throw off the whole animation.
 
     Args:
         motion_values: Motion channel values (hips has 6 channels: Xpos, Ypos, Zpos, Zrot, Xrot, Yrot)
@@ -81,21 +82,22 @@ def _normalize_foot_level(
     if not motion_values or len(motion_values[0]) < 2:
         return motion_values
 
-    # Get foot bone heights from rest offsets
-    leftFoot_offset = rest_offsets.get("leftFoot", np.zeros(3))
-    rightFoot_offset = rest_offsets.get("rightFoot", np.zeros(3))
-    hips_offset = rest_offsets.get("hips", np.zeros(3))
+    # Foot world Y in T-pose = hips_y + sum of Y offsets along the leg chain
+    foot_chain_y = (
+        rest_offsets.get("leftUpperLeg", np.zeros(3))[1]
+        + rest_offsets.get("leftLowerLeg", np.zeros(3))[1]
+        + rest_offsets.get("leftFoot", np.zeros(3))[1]
+    )
+    # To place feet at Y=0, hips must be at Y = -foot_chain_y
+    # e.g. foot_chain_y ≈ -87 cm → target_hips_y = 87 cm
+    target_hips_y = float(-foot_chain_y)
 
-    # Approximate foot level: hips Y + path to foot (simplified as hips height)
-    # In practice, feet are slightly below hips in the kinematic chain
-    # We'll use the hips Y position from first frame as reference
-    first_frame_hips_y = float(motion_values[0][1])  # Ypos of hips is second value
+    # Use median hips Y (more robust than first frame which may be mid-motion)
+    all_hips_y = [float(frame[1]) for frame in motion_values]
+    median_hips_y = float(np.median(all_hips_y))
 
-    # Target feet level at Y=0; hips will be at (first_frame_hips_y - offset)
-    target_hips_y = 0.0
-    y_offset = target_hips_y - first_frame_hips_y
+    y_offset = target_hips_y - median_hips_y
 
-    # Apply Y offset to all frames' hips Y position (channel index 1)
     result = []
     for frame_channels in motion_values:
         frame_copy = list(frame_channels)
