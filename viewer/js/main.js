@@ -2336,6 +2336,7 @@
         }
         setStatus(`Loaded: ${label} (${Math.round(currentClip.duration * 100) / 100}s)`);
         if (modelSkinnedMesh) {
+          window.__dbgHipsOnce = true;
           applyBvhToModel();
           // Log AFTER retargeting to see where bones ended up
           {
