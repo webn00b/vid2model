@@ -798,6 +798,17 @@ export function buildLiveRetargetPlan({
   for (const skeleton of uniqueSkeletons) {
     skeleton.pose();
   }
+  // Reset modelRoot to its base position/orientation before capturing rest state.
+  // Retarget evaluation (probeMotionForBindings) plays clips on modelRoot-rooted
+  // mixers which can move modelRoot via root-motion tracks. Without this reset,
+  // targetRestPos is captured with modelRoot already displaced, causing the model
+  // to float after live retarget.
+  if (modelRoot) {
+    const baseP = modelRoot.userData?.__basePosition;
+    const baseQ = modelRoot.userData?.__baseQuaternion;
+    if (baseP?.isVector3) modelRoot.position.copy(baseP);
+    if (baseQ?.isQuaternion) modelRoot.quaternion.copy(baseQ);
+  }
   modelRoot?.updateMatrixWorld(true);
 
   initializeRetargetPairsRestState(pairs);
