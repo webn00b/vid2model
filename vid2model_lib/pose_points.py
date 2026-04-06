@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -142,7 +142,7 @@ def _build_hand_points(side: str, pts: Dict[str, np.ndarray]) -> Dict[str, np.nd
     }
 
 
-def extract_pose_points(res) -> Optional[Dict[str, np.ndarray]]:
+def extract_pose_points(res, hand_results: Optional[Any] = None) -> Optional[Dict[str, np.ndarray]]:
     # MediaPipe Tasks returns a list of poses; mediapipe.solutions.pose returns
     # a NormalizedLandmarkList / LandmarkList object directly.
     world_landmarks = _first_landmark_list(getattr(res, "pose_world_landmarks", None))
@@ -189,8 +189,26 @@ def extract_pose_points(res) -> Optional[Dict[str, np.ndarray]]:
         "nose": point(LM["nose"]),
     }
 
-    pts.update(_build_hand_points("left", pts))
-    pts.update(_build_hand_points("right", pts))
+    # Try to use real hand landmarks if available, fallback to synthetic
+    for side in ["left", "right"]:
+        hand_pts = None
+        if hand_results is not None:
+            try:
+                from .hand_points import extract_hand_points
+
+                wrist_key = f"{side}_wrist"
+                elbow_key = f"{side}_elbow"
+                if wrist_key in pts and elbow_key in pts:
+                    forearm_len = np.linalg.norm(pts[wrist_key] - pts[elbow_key])
+                    hand_pts = extract_hand_points(hand_results, side, pts[wrist_key], forearm_len)
+            except Exception as exc:
+                print(f"[vid2model] failed to extract real hand points for {side}: {exc}")
+                hand_pts = None
+
+        if hand_pts is not None:
+            pts.update(hand_pts)
+        else:
+            pts.update(_build_hand_points(side, pts))
 
     pts["mid_hip"] = (pts["left_hip"] + pts["right_hip"]) * 0.5
     pts["spine"] = (pts["mid_hip"] + (pts["left_shoulder"] + pts["right_shoulder"]) * 0.5) * 0.5
