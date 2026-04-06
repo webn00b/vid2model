@@ -52,6 +52,10 @@ def main():
         print(f"  Output: {output_path}")
 
         cmd = [
+            "env",
+            "OPENCV_ENHANCE=light",
+            "UPPER_BODY_ROTATION_SCALE=0.75",
+            "ARM_ROTATION_SCALE=0.8",
             "./convert.sh",
             str(video_path),
             str(output_path),
