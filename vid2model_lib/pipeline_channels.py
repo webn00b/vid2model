@@ -144,18 +144,8 @@ def frame_channels(
         global_rot[name] = parent_global @ r_local
         return euler_zxy_from_matrix(r_local)
 
-    # Compute hips height above ground from leg chain rest offsets.
-    # rest_offsets store leg vectors as (0, -length, 0), so summing their Y
-    # gives the foot Y relative to hips (negative). Negating gives hip height.
-    leg_chain_y = (
-        float(rest_offsets.get("leftUpperLeg", np.zeros(3))[1])
-        + float(rest_offsets.get("leftLowerLeg", np.zeros(3))[1])
-        + float(rest_offsets.get("leftFoot", np.zeros(3))[1])
-    )
-    hip_height = -leg_chain_y  # positive: how high hips sit above foot level
-
     rz, rx, ry = solve_joint(root_name)
-    channels.extend([float(root_pos[0]), float(root_pos[1]) + hip_height, float(root_pos[2]), rz, rx, ry])
+    channels.extend([float(root_pos[0]), float(root_pos[1]), float(root_pos[2]), rz, rx, ry])
 
     for joint in JOINTS[1:]:
         rz, rx, ry = solve_joint(joint.name)

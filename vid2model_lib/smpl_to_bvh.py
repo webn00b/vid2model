@@ -205,10 +205,6 @@ def smpl_poses_to_bvh_channels(
 
         motion_values.append(frame_channels)
 
-    # Normalize Y position: find foot level from first frame and offset all frames
-    # so feet rest at Y=0 for consistent animation heights across different videos
-    motion_values = _normalize_foot_level(motion_values, rest_offsets)
-
     return motion_values, rest_offsets, fps
 
 
