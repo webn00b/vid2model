@@ -46,6 +46,11 @@ def normalize_motion_root_yaw(
         updated = list(frame)
         if len(updated) > 5 and np.isfinite(updated[5]):
             updated[5] = _wrap_angle_deg(updated[5] - 180.0)
+        # Compensate spine local Y (index 8) so its world orientation is preserved.
+        # When hips Y flips 180°, spine local was computed using the un-corrected hips
+        # rotation matrix, leaving an artificial ~180° offset in spine Y.
+        if len(updated) > 8 and np.isfinite(updated[8]):
+            updated[8] = _wrap_angle_deg(updated[8] + 180.0)
         normalized.append(updated)
     return normalized, {
         "applied": 1.0,
