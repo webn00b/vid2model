@@ -2289,10 +2289,8 @@
           syncSourceDisplayToModel();
           fitToSkeleton(modelRoot);
         } else {
-          // For source skeleton, use fixed camera position centered on origin
-          camera.position.set(260, 200, 260);
-          controls.target.set(0, 0, 0);
-          controls.update();
+          // For source skeleton only, fit camera to skeleton bounds
+          fitToSkeleton(skeletonObj);
         }
         setStatus(`Loaded: ${label} (${Math.round(currentClip.duration * 100) / 100}s)`);
         if (modelSkinnedMesh) {
