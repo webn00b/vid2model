@@ -7,8 +7,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .pose_model import ensure_pose_model
+from .pose_model import ensure_pose_model, ensure_hand_model
 from .pose_points import extract_pose_points
+from .hand_points import extract_hand_points
 
 
 @lru_cache(maxsize=16)
@@ -96,9 +97,17 @@ def _detect_pose_and_bbox(
     ts_ms: int,
     bbox_w: int,
     bbox_h: int,
+    detect_hand: Optional[Callable[[np.ndarray, int], Any]] = None,
 ) -> Tuple[Any, Optional[Dict[str, np.ndarray]], Optional[Tuple[float, float, float, float]]]:
     res = detect_pose(frame_bgr, ts_ms)
-    pts = extract_pose_points(res)
+    hand_res = None
+    if detect_hand is not None:
+        try:
+            hand_res = detect_hand(frame_bgr, ts_ms)
+        except Exception as exc:
+            print(f"[vid2model] hand detection failed: {exc}", file=sys.stderr)
+
+    pts = extract_pose_points(res, hand_results=hand_res)
     bbox = extract_pose_bbox_pixels(res, bbox_w, bbox_h)
     return res, pts, bbox
 
@@ -161,7 +170,13 @@ def _create_pose_detector(
     min_detection_confidence: float,
     min_tracking_confidence: float,
     cv2,
-) -> Tuple[Callable[[np.ndarray, int], Any], Callable[[], None], str]:
+    hand_tracking: str = "off",
+) -> Tuple[
+    Callable[[np.ndarray, int], Any],
+    Optional[Callable[[np.ndarray, int], Any]],
+    Callable[[], None],
+    str,
+]:
     import mediapipe as mp
 
     try:
@@ -183,12 +198,45 @@ def _create_pose_detector(
         )
         pose = mp_vision.PoseLandmarker.create_from_options(options)
 
+        detect_hand = None
+        hand_close = lambda: None
+
+        if hand_tracking == "auto":
+            try:
+                hand_model_path = ensure_hand_model()
+                hand_options = mp_vision.HandLandmarkerOptions(
+                    base_options=mp_tasks_python.BaseOptions(
+                        model_asset_path=str(hand_model_path),
+                        delegate=mp_tasks_python.BaseOptions.Delegate.CPU,
+                    ),
+                    running_mode=mp_vision.RunningMode.VIDEO,
+                    num_hands=2,
+                    min_hand_detection_confidence=0.5,
+                    min_hand_presence_confidence=0.5,
+                    min_tracking_confidence=0.5,
+                )
+                hands = mp_vision.HandLandmarker.create_from_options(hand_options)
+
+                def detect_hand(frame_bgr: np.ndarray, ts_ms: int):
+                    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                    return hands.detect_for_video(mp_image, ts_ms)
+
+                hand_close = hands.close
+            except Exception as exc:
+                print(f"[vid2model] hand tracking failed to initialize: {exc}", file=sys.stderr)
+                detect_hand = None
+
         def detect_pose(frame_bgr: np.ndarray, ts_ms: int):
             rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             return pose.detect_for_video(mp_image, ts_ms)
 
-        return detect_pose, pose.close, "tasks"
+        def close_all():
+            pose.close()
+            hand_close()
+
+        return detect_pose, detect_hand, close_all, "tasks"
     except Exception as exc:
         if not _should_fallback_to_legacy_pose(exc):
             raise
@@ -206,12 +254,38 @@ def _create_pose_detector(
         min_tracking_confidence=min_tracking_confidence,
     )
 
+    detect_hand = None
+    hand_close = lambda: None
+
+    if hand_tracking == "auto":
+        try:
+            hands = mp.solutions.hands.Hands(
+                static_image_mode=False,
+                max_num_hands=2,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+
+            def detect_hand(frame_bgr: np.ndarray, ts_ms: int):
+                del ts_ms
+                rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                return hands.process(rgb)
+
+            hand_close = hands.close
+        except Exception as exc:
+            print(f"[vid2model] hand tracking failed to initialize: {exc}", file=sys.stderr)
+            detect_hand = None
+
     def detect_pose(frame_bgr: np.ndarray, ts_ms: int):
         del ts_ms
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         return pose.process(rgb)
 
-    return detect_pose, pose.close, "solutions"
+    def close_all():
+        pose.close()
+        hand_close()
+
+    return detect_pose, detect_hand, close_all, "solutions"
 
 
 def clamp_roi_box(
@@ -297,6 +371,7 @@ def _detect_frame_pose_with_roi(
     detect_pose: Callable[[np.ndarray, int], Any],
     roi_crop: str,
     roi_state: Optional[Tuple[int, int, int, int]],
+    detect_hand: Optional[Callable[[np.ndarray, int], Any]] = None,
 ) -> Tuple[
     Optional[Dict[str, np.ndarray]],
     Optional[Tuple[float, float, float, float]],
@@ -320,6 +395,7 @@ def _detect_frame_pose_with_roi(
                 ts_ms,
                 roi_frame.shape[1],
                 roi_frame.shape[0],
+                detect_hand=detect_hand,
             )
             if roi_bbox is not None:
                 bbox_for_roi = (
@@ -331,9 +407,13 @@ def _detect_frame_pose_with_roi(
         if pts is None:
             fell_back_to_full_frame = True
             used_roi = False
-            _, pts, bbox_for_roi = _detect_pose_and_bbox(detect_pose, frame_for_pose, ts_ms + 1, frame_w, frame_h)
+            _, pts, bbox_for_roi = _detect_pose_and_bbox(
+                detect_pose, frame_for_pose, ts_ms + 1, frame_w, frame_h, detect_hand=detect_hand
+            )
     else:
-        _, pts, bbox_for_roi = _detect_pose_and_bbox(detect_pose, frame_for_pose, ts_ms, frame_w, frame_h)
+        _, pts, bbox_for_roi = _detect_pose_and_bbox(
+            detect_pose, frame_for_pose, ts_ms, frame_w, frame_h, detect_hand=detect_hand
+        )
 
     return pts, bbox_for_roi, used_roi, fell_back_to_full_frame
 
@@ -367,6 +447,7 @@ def collect_detected_pose_samples(
     max_frame_side: int = 0,
     roi_crop: str = "off",
     override_fps: float = None,
+    hand_tracking: str = "off",
 ) -> Tuple[float, List[Optional[Dict[str, np.ndarray]]], List[Dict[str, np.ndarray]], Dict[str, Any]]:
     import cv2
 
@@ -387,13 +468,14 @@ def collect_detected_pose_samples(
         if not fps or fps <= 1e-6:
             fps = 30.0
 
-    detect_pose, close_pose, pose_backend = _create_pose_detector(
+    detect_pose, detect_hand, close_all, pose_backend = _create_pose_detector(
         model_complexity=model_complexity,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
         cv2=cv2,
+        hand_tracking=hand_tracking,
     )
-    print(f"[vid2model] pose_backend={pose_backend}", file=sys.stderr)
+    print(f"[vid2model] pose_backend={pose_backend} hand_tracking={hand_tracking}", file=sys.stderr)
 
     frames_pts_raw: List[Optional[Dict[str, np.ndarray]]] = []
     detected_samples: List[Dict[str, np.ndarray]] = []
@@ -420,6 +502,7 @@ def collect_detected_pose_samples(
             detect_pose,
             roi_crop,
             roi_state,
+            detect_hand=detect_hand,
         )
         if used_roi:
             roi_used_count += 1
@@ -452,7 +535,7 @@ def collect_detected_pose_samples(
             )
 
     cap.release()
-    close_pose()
+    close_all()
 
     if roi_crop == "auto":
         print(

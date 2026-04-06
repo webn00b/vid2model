@@ -237,6 +237,28 @@ python3 convert_video_to_bvh.py \
 - `--roi-crop {off,auto}`: adaptive crop вокруг человека
 - `--max-gap-interpolate`: сколько кадров подряд можно интерполировать
 - `--skeleton-profile-json`: override rest offsets под конкретную модель
+- `--hand-tracking {off,auto}`: real finger landmark tracking (21 points per hand instead of synthetic)
+
+## Real Finger Tracking
+
+По умолчанию пайплайн захватывает пальцы **синтетически** — из 3 кончиков пальцев (index, middle, pinky). Это быстро, но поверхностно.
+
+С флагом `--hand-tracking auto` используется **полный 21-point MediaPipe Hand** для каждой руки, что даёт реальные суставы всех пальцев:
+
+```bash
+# С реальным захватом пальцев
+./convert.sh think.mp4 output/think.bvh --hand-tracking auto
+
+# Или через CLI напрямую
+python3 convert_video_to_bvh.py \
+  --input think.mp4 \
+  --output-bvh output/think.bvh \
+  --hand-tracking auto
+```
+
+Результат: пальцы двигаются так, как в видео. BVH включает все 32 палец-кости (16 на руку) с реальными ротациями, не синтезированными.
+
+**Компромисс:** `--hand-tracking auto` примерно в 1.5x медленнее, чем по умолчанию, так как запускает дополнительный MediaPipe детектор. Синтетический режим остаётся default.
 
 ## Motion presets
 
@@ -255,6 +277,42 @@ python3 convert_video_to_bvh.py \
 - `dance` меньше давит выразительное движение и отключает auto-loop по умолчанию
 
 См. пример конфига: [config.example.yaml](/Users/fedor/projects/personal/videoToModel/vid2model/config.example.yaml)
+
+## Slovo Dataset Integration (WIP)
+
+Для разнообразия жестов рук доступен датасет **Slovo** — 20,400 видеороликов русских жестов (20 samples × 1000 жестов, в том числе приветствия).
+
+**Что скачать из Slovo:**
+
+1. **Metadata** (нужно всегда):
+   - `annotations.csv` — таблица с gesture labels, frame ranges, train/test split, размерами видео
+
+2. **Видео** (для Phase 2 — Slovo ingestion):
+   - **Trimmed videos** (~16GB) — видео уже обрезаны по жестам (рекомендуется для начала)
+   - ИЛИ 360p resized (~13GB) — более компактная версия
+   - Ссылка: [Slovo GitHub](https://github.com/hukenovs/slovo)
+
+3. **Hand landmarks** (для Phase 3 — оптимизация):
+   - ~1.2GB pickle-файлов с pre-computed MediaPipe Hand landmarks
+   - Избегает пере-запуска MediaPipe на каждое видео
+
+**Путь использования (Phase 2):**
+
+```bash
+# Скачать и распаковать
+mkdir -p data/slovo
+# Распаковать annotations.csv и видео в data/slovo/
+
+# Обработать приветствия с real finger tracking
+python3 tools/slovo_ingest.py \
+  --annotations data/slovo/annotations.csv \
+  --videos-dir data/slovo/videos \
+  --gesture "Привет" \
+  --output-dir output/slovo_greetings/ \
+  --hand-tracking auto
+```
+
+Result: BVH-клипы с живой анимацией рук из настоящих жестов, готовые к ретаргету на VRM.
 
 ## Diagnostic JSON
 
