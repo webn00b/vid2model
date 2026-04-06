@@ -20,6 +20,7 @@ def build_rest_offsets(samples: List[Dict[str, np.ndarray]]) -> Dict[str, np.nda
 
     for joint in JOINTS:
         if joint.parent is None:
+            # Root (hips) offset is set after all other joints are computed
             rest[joint.name] = np.array([0.0, 0.0, 0.0], dtype=np.float64)
             continue
 
@@ -54,6 +55,19 @@ def build_rest_offsets(samples: List[Dict[str, np.ndarray]]) -> Dict[str, np.nda
             direction = np.array([0.0, 1.0, 0.0], dtype=np.float64)
             direction_norm = 1.0
         rest[joint.name] = (direction / direction_norm) * length
+
+    # Set hips OFFSET = standing height above ground (derived from leg chain).
+    # This matches BVH bind pose to the actual standing position so that
+    # source.position - sourceRestPos ≈ 0 at rest (small motion delta only).
+    # Mirrors what SMPL does with its explicit hip_height offset.
+    leg_chain_y = (
+        float(rest.get("leftUpperLeg", np.zeros(3))[1])
+        + float(rest.get("leftLowerLeg", np.zeros(3))[1])
+        + float(rest.get("leftFoot", np.zeros(3))[1])
+    )
+    hip_height = -leg_chain_y  # positive: hips distance above foot level
+    if hip_height > 1e-6:
+        rest["hips"] = np.array([0.0, hip_height, 0.0], dtype=np.float64)
 
     return rest
 
