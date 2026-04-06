@@ -54,8 +54,9 @@ def main():
         cmd = [
             "env",
             "OPENCV_ENHANCE=light",
-            "UPPER_BODY_ROTATION_SCALE=0.75",
-            "ARM_ROTATION_SCALE=0.8",
+            "UPPER_BODY_ROTATION_SCALE=0.3",
+            "ARM_ROTATION_SCALE=1.0",
+            "ROOT_YAW_OFFSET_DEG=90",
             "./convert.sh",
             str(video_path),
             str(output_path),
