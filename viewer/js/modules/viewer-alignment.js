@@ -1,5 +1,63 @@
 import * as THREE from "three";
 
+const _groundYPos = new THREE.Vector3();
+const FOOT_KEYS = new Set(["leftFoot", "rightFoot", "leftToes", "rightToes"]);
+
+function isFootBone(bone, canonicalBoneKey) {
+  if (!bone) return false;
+  if (typeof canonicalBoneKey === "function") {
+    const key = canonicalBoneKey(bone.name);
+    return FOOT_KEYS.has(key);
+  }
+  return FOOT_KEYS.has(String(bone.name || "").toLowerCase());
+}
+
+function measureGroundY(bones, canonicalBoneKey = null) {
+  let minFootY = Infinity;
+  let minAnyY = Infinity;
+  for (const bone of bones || []) {
+    if (!bone?.isBone) continue;
+    bone.getWorldPosition(_groundYPos);
+    if (_groundYPos.y < minAnyY) minAnyY = _groundYPos.y;
+    if (isFootBone(bone, canonicalBoneKey) && _groundYPos.y < minFootY) {
+      minFootY = _groundYPos.y;
+    }
+  }
+  return Number.isFinite(minFootY) ? minFootY : minAnyY;
+}
+
+export function computeBvhGroundY({
+  bones,
+  mixer,
+  clip,
+  canonicalBoneKey = null,
+  sampleCount = 12,
+}) {
+  if (!bones?.length) return null;
+  const root = bones[0] || null;
+  if (!root?.isBone) return null;
+
+  const hasClip = clip?.duration > 0 && typeof mixer?.setTime === "function";
+  const steps = hasClip ? Math.max(2, Math.min(32, Math.floor(sampleCount || 12))) : 0;
+  const originalTime = Number.isFinite(mixer?.time) ? mixer.time : 0;
+  let groundY = Infinity;
+
+  if (hasClip) {
+    for (let i = 0; i <= steps; i += 1) {
+      mixer.setTime((clip.duration * i) / steps);
+      root.updateMatrixWorld(true);
+      groundY = Math.min(groundY, measureGroundY(bones, canonicalBoneKey));
+    }
+    mixer.setTime(originalTime);
+    root.updateMatrixWorld(true);
+  } else {
+    root.updateMatrixWorld(true);
+    groundY = measureGroundY(bones, canonicalBoneKey);
+  }
+
+  return Number.isFinite(groundY) ? groundY : null;
+}
+
 export function createViewerAlignmentTools({
   canonicalBoneKey,
   diag,
@@ -45,12 +103,11 @@ export function createViewerAlignmentTools({
 
   function findFootLevelY(bones) {
     if (!bones?.length) return null;
-    const footKeys = new Set(["leftFoot", "rightFoot", "leftToes", "rightToes"]);
     const ys = [];
     const point = new THREE.Vector3();
     for (const bone of bones) {
       const key = canonicalBoneKey(bone.name);
-      if (!footKeys.has(key)) continue;
+      if (!FOOT_KEYS.has(key)) continue;
       bone.getWorldPosition(point);
       ys.push(point.y);
     }

@@ -81,9 +81,6 @@ export function createViewerParsedModelApplier({
         bone.getWorldPosition(_boneWP);
         if (_boneWP.y < _minBoneY) { _minBoneY = _boneWP.y; _minBoneName = bone.name; }
       }
-      console.log("[ground-snap/model] modelRoot.position.y=", state.modelRoot.position.y,
-        "minBoneY=", _minBoneY, "minBone=", _minBoneName,
-        "basePos before=", state.modelRoot.userData.__basePosition?.y);
       if (Number.isFinite(_minBoneY) && Math.abs(_minBoneY) > 0.001) {
         state.modelRoot.position.y -= _minBoneY;
         state.modelRoot.updateMatrixWorld(true);
@@ -91,10 +88,6 @@ export function createViewerParsedModelApplier({
         if (rootBone && rootBone !== state.modelRoot) {
           rootBone.userData.__retargetBasePosition = rootBone.position.clone();
         }
-        console.log("[ground-snap/model] snapped, new modelRoot.position.y=", state.modelRoot.position.y,
-          "basePos after=", state.modelRoot.userData.__basePosition.y);
-      } else {
-        console.log("[ground-snap/model] no snap needed or invalid minBoneY");
       }
     }
 
