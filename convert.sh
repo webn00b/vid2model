@@ -5,7 +5,19 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$ROOT_DIR/.venv"
 PYTHON_BIN="${PYTHON_BIN:-}"
 MIN_PYTHON_MINOR=10
-MAX_PYTHON_MINOR=12
+MAX_PYTHON_MINOR=10
+OPENCV_ENHANCE="${OPENCV_ENHANCE:-off}"
+MAX_FRAME_SIDE="${MAX_FRAME_SIDE:-0}"
+ROI_CROP="${ROI_CROP:-off}"
+UPPER_ROTATION_OFFSET_DEG="${UPPER_ROTATION_OFFSET_DEG:-0}"
+UPPER_BODY_ROTATION_SCALE="${UPPER_BODY_ROTATION_SCALE:-1}"
+ARM_ROTATION_SCALE="${ARM_ROTATION_SCALE:-1}"
+ROOT_YAW_OFFSET_DEG="${ROOT_YAW_OFFSET_DEG:-0}"
+LOWER_BODY_ROTATION_MODE="${LOWER_BODY_ROTATION_MODE:-off}"
+LOOP_MODE="${LOOP_MODE:-off}"
+SKELETON_PROFILE_JSON="${SKELETON_PROFILE_JSON:-}"
+VRM_MODEL="${VRM_MODEL:-}"
+OVERRIDE_FPS="${OVERRIDE_FPS:-}"
 
 python_minor() {
   "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
@@ -32,7 +44,7 @@ select_python_bin() {
   if [[ -n "$PYTHON_BIN" ]]; then
     candidates+=("$PYTHON_BIN")
   fi
-  candidates+=(python3.12 python3.11 python3.10 python3)
+  candidates+=(python3.10 python3.12 python3.11 python3)
 
   local candidate
   for candidate in "${candidates[@]}"; do
@@ -45,8 +57,8 @@ select_python_bin() {
 }
 
 if ! select_python_bin; then
-  echo "No supported Python found (need 3.${MIN_PYTHON_MINOR}-3.${MAX_PYTHON_MINOR} for stable mediapipe wheels)." >&2
-  echo "Install Python 3.10/3.11/3.12 or set PYTHON_BIN explicitly to a supported interpreter." >&2
+  echo "No supported Python found (need Python 3.10 for the pinned mediapipe wheel)." >&2
+  echo "Install Python 3.10 or set PYTHON_BIN explicitly to a supported interpreter." >&2
   exit 2
 fi
 
@@ -64,12 +76,27 @@ print_usage() {
   cat <<'USAGE'
 Usage:
   ./convert.sh <input_video> <output_bvh> [output_json] [output_csv] [output_npz] [output_trc] [output_fbx]
-  ./convert.sh --auto <input_video> [--all] [--fbx]
+  ./convert.sh --auto <input_video> [--all] [--fbx] [--vrm model.vrm]
 
 Auto mode:
   Writes to output/<input_stem>.* (e.g. think.mp4 -> output/think.bvh).
   --all  Also write json/csv/npz/trc.
   --fbx  Also write fbx via Blender.
+  --vrm <model.vrm>  Retarget animation onto VRM model (requires Blender + VRM Add-on).
+
+Environment knobs:
+  OPENCV_ENHANCE=off|light|strong   OpenCV pre-processing before pose detection.
+  MAX_FRAME_SIDE=0|N                Resize frame so longest side <= N (0 disables).
+  ROI_CROP=off|auto                 Adaptive person ROI crop between frames.
+  UPPER_ROTATION_OFFSET_DEG=0|180   Extra Y rotation offset for upper body only.
+  UPPER_BODY_ROTATION_SCALE=1|0.35  Keep only a fraction of torso/arm rotation.
+  ARM_ROTATION_SCALE=1|0.15         Keep only a fraction of arm/hand rotation.
+  ROOT_YAW_OFFSET_DEG=0|180|-90     Extra source root yaw offset in degrees.
+  LOWER_BODY_ROTATION_MODE=off|invert|yaw180  Extra lower-body source rotation correction.
+  LOOP_MODE=off|auto|force          Extract a cyclic loop window from the cleaned motion.
+  SKELETON_PROFILE_JSON=path        Override BVH rest offsets using a model skeleton profile JSON.
+  OVERRIDE_FPS=N                    Override video FPS (auto-detected from file if not set).
+  VRM_MODEL=path                    Retarget onto VRM model (same as --vrm).
 USAGE
 }
 
@@ -85,6 +112,8 @@ OUTPUT_CSV=""
 OUTPUT_NPZ=""
 OUTPUT_TRC=""
 OUTPUT_FBX=""
+OUTPUT_VRM=""
+OUTPUT_DIAG_JSON=""
 
 if [[ "$1" == "--auto" ]]; then
   shift
@@ -101,6 +130,14 @@ if [[ "$1" == "--auto" ]]; then
     case "$1" in
       --all) AUTO_ALL=1 ;;
       --fbx) AUTO_FBX=1 ;;
+      --vrm)
+        shift
+        if [[ $# -lt 1 ]]; then
+          echo "--vrm requires a path to a .vrm model file" >&2
+          exit 2
+        fi
+        VRM_MODEL="$1"
+        ;;
       -h|--help)
         print_usage
         exit 0
@@ -126,8 +163,12 @@ if [[ "$1" == "--auto" ]]; then
     OUTPUT_NPZ="$out_dir/$stem.npz"
     OUTPUT_TRC="$out_dir/$stem.trc"
   fi
+  OUTPUT_DIAG_JSON="$out_dir/$stem.diag.json"
   if [[ "$AUTO_FBX" -eq 1 ]]; then
     OUTPUT_FBX="$out_dir/$stem.fbx"
+  fi
+  if [[ -n "$VRM_MODEL" ]]; then
+    OUTPUT_VRM="$out_dir/$stem.vrm"
   fi
 else
   if [[ $# -lt 2 ]]; then
@@ -141,6 +182,9 @@ else
   OUTPUT_NPZ="${5:-}"
   OUTPUT_TRC="${6:-}"
   OUTPUT_FBX="${7:-}"
+  if [[ -n "$OUTPUT_BVH" ]]; then
+    OUTPUT_DIAG_JSON="${OUTPUT_BVH%.*}.diag.json"
+  fi
 fi
 
 if [[ ! -x "$VENV_DIR/bin/python" ]]; then
@@ -169,9 +213,49 @@ fi
 if [[ -n "$OUTPUT_TRC" ]]; then
   CMD+=(--output-trc "$OUTPUT_TRC")
 fi
+if [[ -n "$OUTPUT_DIAG_JSON" ]]; then
+  CMD+=(--output-diag-json "$OUTPUT_DIAG_JSON")
+fi
+if [[ -n "$OPENCV_ENHANCE" ]]; then
+  CMD+=(--opencv-enhance "$OPENCV_ENHANCE")
+fi
+if [[ -n "$MAX_FRAME_SIDE" ]]; then
+  CMD+=(--max-frame-side "$MAX_FRAME_SIDE")
+fi
+if [[ -n "$ROI_CROP" ]]; then
+  CMD+=(--roi-crop "$ROI_CROP")
+fi
+if [[ -n "$ROOT_YAW_OFFSET_DEG" ]]; then
+  CMD+=(--root-yaw-offset-deg "$ROOT_YAW_OFFSET_DEG")
+fi
+if [[ -n "$UPPER_ROTATION_OFFSET_DEG" ]]; then
+  CMD+=(--upper-rotation-offset-deg "$UPPER_ROTATION_OFFSET_DEG")
+fi
+if [[ -n "$UPPER_BODY_ROTATION_SCALE" ]]; then
+  CMD+=(--upper-body-rotation-scale "$UPPER_BODY_ROTATION_SCALE")
+fi
+if [[ -n "$ARM_ROTATION_SCALE" ]]; then
+  CMD+=(--arm-rotation-scale "$ARM_ROTATION_SCALE")
+fi
+if [[ -n "$LOWER_BODY_ROTATION_MODE" ]]; then
+  CMD+=(--lower-body-rotation-mode "$LOWER_BODY_ROTATION_MODE")
+fi
+if [[ -n "$LOOP_MODE" ]]; then
+  CMD+=(--loop-mode "$LOOP_MODE")
+fi
+if [[ -n "$SKELETON_PROFILE_JSON" ]]; then
+  CMD+=(--skeleton-profile-json "$SKELETON_PROFILE_JSON")
+fi
+if [[ -n "$OVERRIDE_FPS" ]]; then
+  CMD+=(--override-fps "$OVERRIDE_FPS")
+fi
 
 "${CMD[@]}"
 
 if [[ -n "$OUTPUT_FBX" ]]; then
   "$ROOT_DIR/bvh_to_fbx.sh" "$OUTPUT_BVH" "$OUTPUT_FBX"
+fi
+
+if [[ -n "$OUTPUT_VRM" && -n "$VRM_MODEL" ]]; then
+  "$ROOT_DIR/bvh_to_vrm.sh" "$OUTPUT_BVH" "$VRM_MODEL" "$OUTPUT_VRM"
 fi

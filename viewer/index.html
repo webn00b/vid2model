@@ -35,13 +35,39 @@
       border-bottom: 1px solid var(--border);
       background: var(--panel);
     }
-    button, input[type="file"]::file-selector-button {
+    button, input[type="file"]::file-selector-button, select {
       border: 1px solid var(--border);
       background: #fff;
       border-radius: 10px;
       padding: 8px 12px;
       cursor: pointer;
       font-size: 14px;
+      color: var(--text);
+    }
+    select {
+      min-width: 180px;
+    }
+    .file-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fff;
+    }
+    .file-label {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .file-name {
+      font-size: 12px;
+      color: var(--text);
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     input[type="range"] {
       width: 220px;
@@ -80,13 +106,61 @@
       color: var(--muted);
       z-index: 2;
     }
+    .retarget-fab {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      z-index: 20;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(15, 118, 110, 0.35);
+    }
+    .retarget-fab:hover {
+      filter: brightness(1.05);
+    }
+    .retarget-fab:active {
+      transform: translateY(1px);
+    }
+    @media (max-width: 720px) {
+      .retarget-fab {
+        right: 10px;
+        bottom: 10px;
+        padding: 11px 14px;
+        font-size: 13px;
+      }
+    }
   </style>
 </head>
 <body>
   <div id="app">
     <div class="toolbar">
       <button id="load-default" class="primary">Load output/think.bvh</button>
-      <input id="file-input" type="file" accept=".bvh" />
+      <select id="animation-list" title="Select animation from available files">
+        <option value="">Choose animation...</option>
+      </select>
+      <div class="file-group">
+        <span class="file-label">Animation (.bvh)</span>
+        <input id="file-input" type="file" accept=".bvh" title="Load animation BVH file (.bvh)" />
+        <span id="bvh-file-name" class="file-name">not selected</span>
+      </div>
+      <div class="file-group">
+        <span class="file-label">Character (.glb/.vrm)</span>
+        <input id="model-input" type="file" accept=".glb,.vrm" title="Load character model file (.glb or .vrm)" />
+        <span id="model-file-name" class="file-name">not selected</span>
+      </div>
+      <button id="auto-setup" class="primary" title="Analyze the loaded model, pick the best available profile, and apply the animation">Auto Setup</button>
+      <button id="save-model-setup" title="Save the current model setup for future retargets on this machine">Save Model Setup</button>
+      <button id="retarget">Apply To Model</button>
+      <button id="validate-profile" title="Mark the current rig profile as validated for this model">Validate Profile</button>
+      <button id="export-profile" title="Download validated rig profile JSON for the current model">Export Profile</button>
+      <button id="export-model-analysis" title="Download skeleton and proportion analysis for the current model">Export Model Analysis</button>
+      <button id="import-profile" title="Import rig profile JSON and save it as validated">Import Profile</button>
+      <input id="profile-input" type="file" accept=".json,application/json" hidden />
       <button id="zoom-in">Zoom +</button>
       <button id="zoom-out">Zoom -</button>
       <button id="play">Play</button>
@@ -95,239 +169,23 @@
       <input id="timeline" type="range" min="0" max="1" step="0.001" value="0" />
       <div id="time" class="time">0.00 / 0.00</div>
       <button id="reset-camera">Reset Camera</button>
-      <div id="status" class="status">Ready</div>
+        <div id="status" class="status">Ready</div>
     </div>
     <div id="canvas-wrap">
       <div id="hint">LMB rotate, RMB pan, wheel zoom</div>
     </div>
   </div>
+  <button id="retarget-fab" class="retarget-fab" type="button" title="Apply BVH to model">Retarget</button>
 
   <script type="importmap">
     {
       "imports": {
-        "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+        "three": "./vendor/three/three.module.js",
+        "three/addons/": "./vendor/three/addons/",
+        "@pixiv/three-vrm": "./vendor/@pixiv/three-vrm/three-vrm.module.min.js"
       }
     }
   </script>
-
-  <script type="module">
-    import * as THREE from "three";
-    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-    import { BVHLoader } from "three/addons/loaders/BVHLoader.js";
-
-    const wrap = document.getElementById("canvas-wrap");
-    const statusEl = document.getElementById("status");
-    const fileInput = document.getElementById("file-input");
-    const btnLoadDefault = document.getElementById("load-default");
-    const btnZoomIn = document.getElementById("zoom-in");
-    const btnZoomOut = document.getElementById("zoom-out");
-    const btnPlay = document.getElementById("play");
-    const btnPause = document.getElementById("pause");
-    const btnStop = document.getElementById("stop");
-    const timeline = document.getElementById("timeline");
-    const timeEl = document.getElementById("time");
-    const btnResetCamera = document.getElementById("reset-camera");
-
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf8fbff);
-
-    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    wrap.appendChild(renderer.domElement);
-
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.target.set(0, 100, 0);
-
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x7f8ea3, 1.0);
-    scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-    dir.position.set(200, 300, 180);
-    scene.add(dir);
-
-    const grid = new THREE.GridHelper(1200, 30, 0x9aa9be, 0xc7d2e2);
-    scene.add(grid);
-    const axes = new THREE.AxesHelper(120);
-    scene.add(axes);
-
-    camera.position.set(260, 200, 260);
-    controls.update();
-
-    let mixer = null;
-    let skeletonObj = null;
-    let currentClip = null;
-    let currentAction = null;
-    let isPlaying = false;
-    let isScrubbing = false;
-    const loader = new BVHLoader();
-    const clock = new THREE.Clock();
-
-    function setStatus(text) {
-      statusEl.textContent = text;
-    }
-
-    function fitToSkeleton(root) {
-      const box = new THREE.Box3().setFromObject(root);
-      const size = new THREE.Vector3();
-      const center = new THREE.Vector3();
-      box.getSize(size);
-      box.getCenter(center);
-      const maxDim = Math.max(size.x, size.y, size.z, 1);
-      const dist = maxDim * 1.8;
-      camera.position.set(center.x + dist, center.y + dist * 0.8, center.z + dist);
-      controls.target.copy(center);
-      controls.update();
-    }
-
-    function clearCurrent() {
-      if (skeletonObj) scene.remove(skeletonObj);
-      skeletonObj = null;
-      mixer = null;
-      currentClip = null;
-      currentAction = null;
-      isPlaying = false;
-      timeline.value = "0";
-      timeline.max = "1";
-      timeEl.textContent = "0.00 / 0.00";
-    }
-
-    function zoomBy(factor) {
-      const toCam = camera.position.clone().sub(controls.target);
-      const dist = toCam.length();
-      const next = Math.max(20, Math.min(4000, dist * factor));
-      if (dist > 1e-6) {
-        toCam.setLength(next);
-        camera.position.copy(controls.target.clone().add(toCam));
-        controls.update();
-        setStatus(`Zoom: ${Math.round(next)}`);
-      }
-    }
-
-    function loadBvhText(text, label) {
-      try {
-        const result = loader.parse(text);
-        clearCurrent();
-
-        skeletonObj = new THREE.Group();
-        const helper = new THREE.SkeletonHelper(result.skeleton.bones[0]);
-        helper.skeleton = result.skeleton;
-        helper.material.linewidth = 2;
-        helper.material.color.set(0x0f766e);
-        skeletonObj.add(result.skeleton.bones[0]);
-        skeletonObj.add(helper);
-        scene.add(skeletonObj);
-
-        mixer = new THREE.AnimationMixer(result.skeleton.bones[0]);
-        currentClip = result.clip;
-        currentAction = mixer.clipAction(currentClip);
-        currentAction.play();
-        isPlaying = true;
-        timeline.min = "0";
-        timeline.max = String(currentClip.duration);
-        timeline.value = "0";
-        timeEl.textContent = `0.00 / ${currentClip.duration.toFixed(2)}`;
-
-        fitToSkeleton(skeletonObj);
-        setStatus(`Loaded: ${label} (${Math.round(currentClip.duration * 100) / 100}s)`);
-      } catch (err) {
-        console.error(err);
-        setStatus(`Failed to load: ${label}`);
-      }
-    }
-
-    async function loadDefault() {
-      setStatus("Loading output/think.bvh ...");
-      try {
-        const res = await fetch("../output/think.bvh");
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const text = await res.text();
-        loadBvhText(text, "output/think.bvh");
-      } catch (err) {
-        console.error(err);
-        setStatus("Cannot load output/think.bvh. Start local server from vid2model.");
-      }
-    }
-
-    fileInput.addEventListener("change", async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      setStatus(`Loading ${file.name} ...`);
-      const text = await file.text();
-      loadBvhText(text, file.name);
-    });
-
-    btnLoadDefault.addEventListener("click", loadDefault);
-    btnZoomIn.addEventListener("click", () => zoomBy(0.85));
-    btnZoomOut.addEventListener("click", () => zoomBy(1.2));
-    btnPlay.addEventListener("click", () => {
-      if (!mixer || !currentAction) return;
-      isPlaying = true;
-      currentAction.paused = false;
-      setStatus("Playback: play");
-    });
-    btnPause.addEventListener("click", () => {
-      if (!mixer || !currentAction) return;
-      isPlaying = false;
-      currentAction.paused = true;
-      setStatus("Playback: pause");
-    });
-    btnStop.addEventListener("click", () => {
-      if (!mixer || !currentAction) return;
-      isPlaying = false;
-      currentAction.paused = true;
-      mixer.setTime(0);
-      timeline.value = "0";
-      timeEl.textContent = `0.00 / ${currentClip ? currentClip.duration.toFixed(2) : "0.00"}`;
-      setStatus("Playback: stop");
-    });
-    timeline.addEventListener("input", () => {
-      if (!mixer || !currentAction || !currentClip) return;
-      isScrubbing = true;
-      const t = Math.max(0, Math.min(currentClip.duration, Number(timeline.value)));
-      mixer.setTime(t);
-      timeEl.textContent = `${t.toFixed(2)} / ${currentClip.duration.toFixed(2)}`;
-      setStatus(`Scrub: ${t.toFixed(2)}s`);
-    });
-    timeline.addEventListener("change", () => {
-      isScrubbing = false;
-    });
-    btnResetCamera.addEventListener("click", () => {
-      camera.position.set(260, 200, 260);
-      controls.target.set(0, 100, 0);
-      controls.update();
-      setStatus("Camera reset");
-    });
-
-    function onResize() {
-      const w = wrap.clientWidth;
-      const h = wrap.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    }
-    window.addEventListener("resize", onResize);
-    onResize();
-
-    function animate() {
-      requestAnimationFrame(animate);
-      const dt = clock.getDelta();
-      if (mixer && currentClip) {
-        if (isPlaying && !isScrubbing) {
-          mixer.update(dt);
-        }
-        const duration = Math.max(currentClip.duration, 1e-6);
-        const t = mixer.time % duration;
-        if (!isScrubbing) {
-          timeline.value = String(t);
-        }
-        timeEl.textContent = `${t.toFixed(2)} / ${duration.toFixed(2)}`;
-      }
-      controls.update();
-      renderer.render(scene, camera);
-    }
-    animate();
-  </script>
+  <script type="module" src="./js/main.js"></script>
 </body>
 </html>

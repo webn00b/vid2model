@@ -10,6 +10,8 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-smpl/
+.venv.broken.*
 .venv.broken.*/
 venv/
 env/
@@ -29,6 +31,9 @@ Thumbs.db
 
 # Local runtime artifacts
 models/
+!viewer/models/
+viewer/models/*
+!viewer/models/en_0.vrm
 output/
 *.log
 *.download
@@ -38,3 +43,16 @@ output/
 *.temp
 *.bak
 *.swp
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads/embeddeddolt/
+*.db
+.beads-credential-key
+node_modules
+
+# AI agent working directories
+.claude/worktrees/
+.codex/
+
+
