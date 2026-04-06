@@ -31,36 +31,36 @@ HAND_LM = {
 }
 
 
-def _first_hand_result(hand_results, side: str) -> Optional[tuple]:
-    """Extract left or right hand from MediaPipe HandLandmarker results.
+def _world_lm_to_array(lm) -> np.ndarray:
+    """Convert MediaPipe world landmark (meters, wrist-centered) to numpy [x, y, z]."""
+    return np.array([lm.x, -lm.y, -lm.z], dtype=np.float64)
 
-    Returns tuple of (landmarks, handedness) or None if not found.
-    """
-    if hand_results is None or not hasattr(hand_results, "handedness"):
+
+def _find_hand_index(hand_results, side: str) -> Optional[int]:
+    """Find index of left/right hand in HandLandmarker results."""
+    if hand_results is None:
         return None
 
-    if not hand_results.hand_landmarks:
+    # Tasks API: hand_results.handedness is list of Category objects
+    handedness_list = getattr(hand_results, "handedness", None)
+    if not handedness_list:
         return None
 
-    handedness_list = hand_results.handedness
+    for i, handedness in enumerate(handedness_list):
+        # Tasks API: handedness is a list with one Category per hand
+        if isinstance(handedness, list):
+            label = handedness[0].category_name if handedness else ""
+        elif hasattr(handedness, "category_name"):
+            label = handedness.category_name
+        else:
+            label = str(handedness)
 
-    for i, hand_landmarks in enumerate(hand_results.hand_landmarks):
-        if i < len(handedness_list):
-            handedness = handedness_list[i]
-            # Handedness is a classification result with a label ("Left" or "Right")
-            label = handedness.category_name if hasattr(handedness, "category_name") else str(handedness)
-
-            if side.lower() == "left" and "Left" in label:
-                return (hand_landmarks, label)
-            elif side.lower() == "right" and "Right" in label:
-                return (hand_landmarks, label)
+        if side.lower() == "left" and "Left" in label:
+            return i
+        elif side.lower() == "right" and "Right" in label:
+            return i
 
     return None
-
-
-def _landmark_to_array(lm) -> np.ndarray:
-    """Convert MediaPipe landmark to numpy array [x, y, z]."""
-    return np.array([lm.x, -lm.y, -lm.z], dtype=np.float64)
 
 
 def extract_hand_points(
@@ -69,120 +69,51 @@ def extract_hand_points(
     wrist_world: np.ndarray,
     forearm_length: float,
 ) -> Optional[Dict[str, np.ndarray]]:
-    """Convert MediaPipe Hand landmarks to skeleton point names.
+    """Convert MediaPipe Hand world landmarks to skeleton point names.
+
+    Uses hand_world_landmarks (real meters, wrist at origin) — no scaling needed,
+    just translate to wrist_world position from Pose.
 
     Args:
         hand_results: MediaPipe HandLandmarker results object
         side: "left" or "right"
         wrist_world: World-space wrist position from Pose landmarks (np.ndarray [3])
-        forearm_length: Length of forearm (distance from elbow to wrist) for scaling
+        forearm_length: Not used (kept for API compatibility)
 
     Returns:
         Dictionary mapping skeleton point names to 3D positions, or None if hand not detected
     """
-    hand_data = _first_hand_result(hand_results, side)
-    if hand_data is None:
+    hand_idx = _find_hand_index(hand_results, side)
+    if hand_idx is None:
         return None
 
-    hand_landmarks, _ = hand_data
+    # Prefer world landmarks (real meters, wrist at origin)
+    world_landmarks_list = getattr(hand_results, "hand_world_landmarks", None)
 
-    # Extract hand landmarks in hand-relative coordinate frame
-    # MediaPipe Hand coordinates are normalized relative to hand bounding box
-    hand_lms = {}
-    for name, idx in HAND_LM.items():
-        if idx < len(hand_landmarks):
-            hand_lms[name] = _landmark_to_array(hand_landmarks[idx])
+    # Solutions API fallback
+    if world_landmarks_list is None:
+        world_landmarks_list = getattr(hand_results, "multi_hand_world_landmarks", None)
 
-    if "wrist" not in hand_lms:
+    if not world_landmarks_list or hand_idx >= len(world_landmarks_list):
         return None
 
-    # Hand landmarks are in hand-relative frame (roughly normalized)
-    # We need to transform them to world space
+    world_lms = world_landmarks_list[hand_idx]
+    if len(world_lms) < 21:
+        return None
 
-    # Hand WRIST landmark position in hand-relative frame
-    wrist_hand_rel = hand_lms["wrist"]
-
-    # Compute scale: use palm size (wrist to MCP) as basis
-    # MediaPipe MCP landmarks: index=5, middle=9, ring=13
-    palm_distances = []
-    for idx in [5, 9, 13]:  # index, middle, ring MCP
-        if idx < len(hand_landmarks):
-            mcp_pos = _landmark_to_array(hand_landmarks[idx])
-            dist = np.linalg.norm(mcp_pos - wrist_hand_rel)
-            if dist > 1e-6:
-                palm_distances.append(dist)
-
-    if palm_distances:
-        # Average palm distance (wrist to MCP) - this is stable across poses
-        avg_palm_dist = np.mean(palm_distances)
-        # Palm is roughly 0.3-0.4 of forearm length
-        expected_palm_scale = max(forearm_length * 0.4, 0.01)
-        scale = expected_palm_scale / avg_palm_dist if avg_palm_dist > 1e-6 else expected_palm_scale
-    else:
-        # Fallback: use middle finger tip distance
-        if "middle_tip" in hand_lms:
-            wrist_to_middle = np.linalg.norm(hand_lms["middle_tip"] - wrist_hand_rel)
-            expected_hand_scale = max(forearm_length * 0.4, 0.01)
-            scale = expected_hand_scale / wrist_to_middle if wrist_to_middle > 1e-6 else expected_hand_scale
-        else:
-            scale = max(forearm_length * 0.4, 0.01)
-
-    # Compute hand orientation vector (from wrist towards middle finger)
-    if "middle_tip" in hand_lms:
-        hand_dir = hand_lms["middle_tip"] - wrist_hand_rel
-        hand_dir_len = np.linalg.norm(hand_dir)
-        if hand_dir_len > 1e-6:
-            hand_dir = hand_dir / hand_dir_len
-        else:
-            hand_dir = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-    else:
-        hand_dir = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-
-    # Create orthonormal basis for hand coordinate frame
-    # hand_dir is forward, create right and up vectors
-    # Use a cross product to get perpendicular vector
-    if abs(hand_dir[0]) < 0.9:
-        right = np.cross(np.array([0.0, 1.0, 0.0], dtype=np.float64), hand_dir)
-    else:
-        right = np.cross(np.array([0.0, 0.0, 1.0], dtype=np.float64), hand_dir)
-
-    right_len = np.linalg.norm(right)
-    if right_len > 1e-6:
-        right = right / right_len
-    else:
-        right = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-
-    up = np.cross(hand_dir, right)
-    up_len = np.linalg.norm(up)
-    if up_len > 1e-6:
-        up = up / up_len
-    else:
-        up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-
-    # Transform each hand landmark from hand-relative to world space
+    # hand_world_landmarks: wrist is at origin, coordinates are in meters
+    # We just translate by wrist_world to place in pose space
     pts = {}
-
     for name, idx in HAND_LM.items():
-        if idx < len(hand_landmarks):
-            # Hand-relative position
-            hand_rel_pos = hand_lms[name]
+        if idx < len(world_lms):
+            # world landmark is relative to wrist (wrist = 0,0,0)
+            # so add wrist_world to get absolute position
+            pts[f"{side}_{name}"] = _world_lm_to_array(world_lms[idx]) + wrist_world
 
-            # Transform to world space:
-            # 1. Scale to real-world units
-            # 2. Rotate by hand basis vectors
-            # 3. Translate to wrist world position
-            scaled_pos = hand_rel_pos * scale
-            world_pos = (
-                right * scaled_pos[0] +
-                up * scaled_pos[1] +
-                hand_dir * scaled_pos[2] +
-                wrist_world
-            )
+    if f"{side}_wrist" not in pts:
+        return None
 
-            pts[f"{side}_{name}"] = world_pos
-
-    # Map MediaPipe Hand landmark names to skeleton bone names
-    result = {
+    return {
         f"{side}_hand": pts[f"{side}_wrist"],
         # Thumb
         f"{side}_thumb_metacarpal": pts[f"{side}_thumb_cmc"],
@@ -205,5 +136,3 @@ def extract_hand_points(
         f"{side}_little_intermediate": pts[f"{side}_pinky_pip"],
         f"{side}_little_distal": pts[f"{side}_pinky_dip"],
     }
-
-    return result
