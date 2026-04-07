@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -437,6 +438,66 @@ def _update_roi_tracking_state(
     return roi_state, roi_reset
 
 
+def _save_pose_cache(
+    cache_path: Path,
+    fps: float,
+    frames_pts_raw: List[Optional[Dict[str, np.ndarray]]],
+) -> None:
+    """Serialize pose frames to JSON cache file."""
+    def _frame_to_json(pts):
+        if pts is None:
+            return None
+        return {k: v.tolist() for k, v in pts.items()}
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"fps": fps, "frames": [_frame_to_json(f) for f in frames_pts_raw]}
+    tmp = cache_path.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(payload, f, separators=(",", ":"))
+    tmp.replace(cache_path)
+    print(f"[vid2model] pose cache written: {cache_path}", file=sys.stderr)
+
+
+def _load_pose_cache(
+    cache_path: Path,
+) -> Optional[Tuple[float, List[Optional[Dict[str, np.ndarray]]], List[Dict[str, np.ndarray]], Dict[str, Any]]]:
+    """Load pose frames from JSON cache file. Returns None if cache is missing or corrupt."""
+    if not cache_path.exists():
+        return None
+    try:
+        with open(cache_path) as f:
+            payload = json.load(f)
+        fps = float(payload["fps"])
+        frames_pts_raw: List[Optional[Dict[str, np.ndarray]]] = []
+        detected_samples: List[Dict[str, np.ndarray]] = []
+        detected_count = 0
+        for frame in payload["frames"]:
+            if frame is None:
+                frames_pts_raw.append(None)
+            else:
+                pts = {k: np.array(v, dtype=np.float64) for k, v in frame.items()}
+                frames_pts_raw.append(pts)
+                detected_count += 1
+                if len(detected_samples) < 60:
+                    detected_samples.append(pts)
+        stats: Dict[str, Any] = {
+            "frames": len(frames_pts_raw),
+            "detected": detected_count,
+            "roi_used": 0,
+            "roi_fallback": 0,
+            "roi_resets": 0,
+            "pose_backend": "cache",
+        }
+        print(
+            f"[vid2model] pose cache loaded: {cache_path} frames={len(frames_pts_raw)} detected={detected_count}",
+            file=sys.stderr,
+        )
+        return fps, frames_pts_raw, detected_samples, stats
+    except Exception as exc:
+        print(f"[vid2model] pose cache load failed ({cache_path}): {exc} — re-detecting", file=sys.stderr)
+        return None
+
+
 def collect_detected_pose_samples(
     input_path: Path,
     model_complexity: int,
@@ -448,7 +509,13 @@ def collect_detected_pose_samples(
     roi_crop: str = "off",
     override_fps: float = None,
     hand_tracking: str = "off",
+    pose_cache_path: Optional[Path] = None,
 ) -> Tuple[float, List[Optional[Dict[str, np.ndarray]]], List[Dict[str, np.ndarray]], Dict[str, Any]]:
+    if pose_cache_path is not None:
+        cached = _load_pose_cache(pose_cache_path)
+        if cached is not None:
+            return cached
+
     import cv2
 
     opencv_enhance, max_frame_side, roi_crop = _normalize_scan_options(
@@ -554,4 +621,11 @@ def collect_detected_pose_samples(
         "roi_resets": roi_reset_count,
         "pose_backend": pose_backend,
     }
+
+    if pose_cache_path is not None:
+        try:
+            _save_pose_cache(pose_cache_path, fps, frames_pts_raw)
+        except Exception as exc:
+            print(f"[vid2model] pose cache write failed: {exc}", file=sys.stderr)
+
     return fps, frames_pts_raw, detected_samples, stats

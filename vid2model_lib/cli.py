@@ -37,6 +37,7 @@ class CliOptions:
     loop_mode: str
     override_fps: float | None
     hand_tracking: str
+    pose_cache_path: Path | None
     preset: str
 
 
@@ -145,6 +146,14 @@ def parse_args() -> argparse.Namespace:
         choices=["off", "auto"],
         help="Enable real hand landmark tracking alongside pose detection.",
     )
+    parser.add_argument(
+        "--pose-cache-dir",
+        help=(
+            "Directory to cache per-video pose detection results. "
+            "On first run, saves detected landmarks to <dir>/<stem>.pose.json. "
+            "On subsequent runs, loads from cache instead of re-running MediaPipe."
+        ),
+    )
     parser.add_argument("--check-tools", action="store_true", help="Validate local toolchain and exit.")
     return parser.parse_args()
 
@@ -235,6 +244,14 @@ def _validate_minimum(value: int, name: str, minimum: int) -> None:
 def _require_probability(value: float, name: str) -> None:
     if not (0.0 <= value <= 1.0):
         raise ValueError(f"{name} must be in range [0.0, 1.0]")
+
+
+def _resolve_pose_cache_path(args: argparse.Namespace, input_path: Path) -> "Path | None":
+    cache_dir_raw = getattr(args, "pose_cache_dir", None)
+    if not cache_dir_raw:
+        return None
+    cache_dir = Path(cache_dir_raw).expanduser().resolve()
+    return cache_dir / f"{input_path.stem}.pose.json"
 
 
 def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOptions:
@@ -348,6 +365,7 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
         loop_mode=loop_mode,
         override_fps=override_fps,
         hand_tracking=hand_tracking,
+        pose_cache_path=_resolve_pose_cache_path(args, input_path),
         preset=preset,
     )
 
@@ -380,6 +398,7 @@ def main() -> int:
         override_fps=options.override_fps,
         hand_tracking=options.hand_tracking,
         include_source_stage_diagnostics=options.output_diag_json is not None,
+        pose_cache_path=options.pose_cache_path,
     )
     quality = diagnostics.get("quality")
     if isinstance(quality, dict):

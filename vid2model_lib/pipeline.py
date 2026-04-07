@@ -339,6 +339,7 @@ def convert_video_to_bvh(
     override_fps: Optional[float] = None,
     hand_tracking: str = "off",
     include_source_stage_diagnostics: bool = False,
+    pose_cache_path: Optional[Path] = None,
 ) -> Tuple[float, Dict[str, np.ndarray], List[List[float]], np.ndarray, List[Dict[str, np.ndarray]], Dict[str, Any]]:
     fps, frames_pts_raw, detected_samples, scan_stats = collect_detected_pose_samples(
         input_path=input_path,
@@ -351,6 +352,7 @@ def convert_video_to_bvh(
         roi_crop=roi_crop,
         override_fps=override_fps,
         hand_tracking=hand_tracking,
+        pose_cache_path=pose_cache_path,
     )
     detected_count = scan_stats["detected"]
     roi_used_count = scan_stats["roi_used"]
