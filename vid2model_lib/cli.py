@@ -82,6 +82,20 @@ PRESET_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_gap_interpolate": 4,
         "loop_mode": "off",
     },
+    # Sign language / gesture: frontal camera, static stance, all content in hands/arms.
+    # Optimized for SLOVO Russian Sign Language dataset and similar gesture recordings.
+    "sign_language": {
+        "opencv_enhance": "light",
+        "roi_crop": "auto",
+        "max_frame_side": 640,
+        "max_gap_interpolate": 4,
+        "loop_mode": "off",
+        "hand_tracking": "auto",
+        "upper_body_rotation_scale": 0.3,
+        "arm_rotation_scale": 1.0,
+        "lower_body_rotation_mode": "off",
+        "root_yaw_offset_deg": 90.0,
+    },
 }
 
 
@@ -90,7 +104,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", help="Path to config file (.json/.yaml/.yml)")
     parser.add_argument(
         "--preset",
-        choices=["idle", "walk", "run", "dance"],
+        choices=["idle", "walk", "run", "dance", "sign_language"],
         help="Optional motion preset that adjusts defaults for cleanup and detection.",
     )
     parser.add_argument("--input", help="Path to input video file (mp4/webm/mov/etc)")
@@ -272,11 +286,11 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
     min_tracking_confidence = float(_merge_config_value(args, cfg, "min_tracking_confidence", 0.5))
     max_gap_interpolate = int(_merge_config_value(args, cfg, "max_gap_interpolate", preset_defaults.get("max_gap_interpolate", 8)))
     opencv_enhance = str(_merge_config_value(args, cfg, "opencv_enhance", preset_defaults.get("opencv_enhance", "off"))).strip().lower()
-    max_frame_side = int(_merge_config_value(args, cfg, "max_frame_side", 0))
+    max_frame_side = int(_merge_config_value(args, cfg, "max_frame_side", preset_defaults.get("max_frame_side", 0)))
     roi_crop = str(_merge_config_value(args, cfg, "roi_crop", preset_defaults.get("roi_crop", "off"))).strip().lower()
     progress_every = int(_merge_config_value(args, cfg, "progress_every", 100))
-    root_yaw_offset_deg = float(_merge_config_value(args, cfg, "root_yaw_offset_deg", 0.0))
-    lower_body_rotation_mode = str(_merge_config_value(args, cfg, "lower_body_rotation_mode", "off")).strip().lower()
+    root_yaw_offset_deg = float(_merge_config_value(args, cfg, "root_yaw_offset_deg", preset_defaults.get("root_yaw_offset_deg", 0.0)))
+    lower_body_rotation_mode = str(_merge_config_value(args, cfg, "lower_body_rotation_mode", preset_defaults.get("lower_body_rotation_mode", "off"))).strip().lower()
     loop_mode = str(_merge_config_value(args, cfg, "loop_mode", preset_defaults.get("loop_mode", "off"))).strip().lower()
     override_fps_value = _merge_config_value(args, cfg, "override_fps", None)
     override_fps = float(override_fps_value) if override_fps_value else None
