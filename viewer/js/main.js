@@ -116,11 +116,13 @@
     const profileInput = document.getElementById("profile-input");
     const btnRetargetFab = document.getElementById("retarget-fab");
     const btnLoadDefault = document.getElementById("load-default");
-    const btnZoomIn = document.getElementById("zoom-in");
-    const btnZoomOut = document.getElementById("zoom-out");
-    const btnPlay = document.getElementById("play");
-    const btnPause = document.getElementById("pause");
+const btnPlayToggle = document.getElementById("play-toggle");
     const btnStop = document.getElementById("stop");
+    const btnToggleSkeleton = document.getElementById("toggle-skeleton");
+    const btnToggleModel = document.getElementById("toggle-model");
+    const btnDarkToggle = document.getElementById("dark-toggle");
+    const btnToolsToggle = document.getElementById("tools-toggle");
+    const toolsGroup = document.getElementById("tools-group");
     const timeline = document.getElementById("timeline");
     const timeEl = document.getElementById("time");
     const btnResetCamera = document.getElementById("reset-camera");
@@ -131,7 +133,8 @@
     const REPO_RIG_PROFILE_MANIFEST_URL = new URL("../rig-profiles/index.json", import.meta.url).href;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf8fbff);
+    const _isDarkOnLoad = localStorage.getItem("vid2model.darkMode") === "1";
+    scene.background = new THREE.Color(_isDarkOnLoad ? 0x0d1117 : 0xf8fbff);
 
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -816,8 +819,55 @@
       });
     }
 
+    const statusTextEl = document.getElementById("status-text");
     function setStatus(text) {
-      statusEl.textContent = text;
+      const busy = text.startsWith("Loading");
+      statusEl.classList.toggle("busy", busy);
+      if (statusTextEl) statusTextEl.textContent = text;
+      else statusEl.textContent = text;
+    }
+
+    function setSceneBg(theme) {
+      scene.background = new THREE.Color(theme === "dark" ? 0x0d1117 : 0xf8fbff);
+    }
+
+    const VIS_SKELETON_KEY = "vid2model.showSkeleton";
+    const VIS_MODEL_KEY = "vid2model.showModel";
+
+    function _saveVisibility(key, visible) {
+      localStorage.setItem(key, visible ? "1" : "0");
+      const params = new URLSearchParams(location.search);
+      params.set(key.replace("vid2model.", ""), visible ? "1" : "0");
+      history.replaceState(null, "", "?" + params.toString());
+    }
+
+    function _loadVisibility(key) {
+      const param = new URLSearchParams(location.search).get(key.replace("vid2model.", ""));
+      if (param !== null) return param !== "0";
+      const stored = localStorage.getItem(key);
+      return stored !== "0"; // default visible
+    }
+
+    function toggleSkeleton() {
+      if (!skeletonObj) return _loadVisibility(VIS_SKELETON_KEY);
+      skeletonObj.visible = !skeletonObj.visible;
+      _saveVisibility(VIS_SKELETON_KEY, skeletonObj.visible);
+      return skeletonObj.visible;
+    }
+
+    function toggleModel() {
+      if (!modelRoot) return _loadVisibility(VIS_MODEL_KEY);
+      modelRoot.visible = !modelRoot.visible;
+      _saveVisibility(VIS_MODEL_KEY, modelRoot.visible);
+      return modelRoot.visible;
+    }
+
+    function applySkeletonVisibility() {
+      if (skeletonObj) skeletonObj.visible = _loadVisibility(VIS_SKELETON_KEY);
+    }
+
+    function applyModelVisibility() {
+      if (modelRoot) modelRoot.visible = _loadVisibility(VIS_MODEL_KEY);
     }
 
     function isVerboseDiagMode() {
@@ -2283,6 +2333,7 @@
         skeletonObj.add(result.skeleton.bones[0]);
         skeletonObj.add(helper);
         scene.add(skeletonObj);
+        applySkeletonVisibility();
         createSourceOverlay(result.skeleton);
         createSourceAxesDebug(result.skeleton);
         for (const bone of result.skeleton.bones || []) {
@@ -2430,7 +2481,7 @@
       get isPlaying() { return isPlaying; },
       set isPlaying(next) { isPlaying = !!next; },
       get modelRoot() { return modelRoot; },
-      set modelRoot(next) { modelRoot = next; },
+      set modelRoot(next) { modelRoot = next; applyModelVisibility(); },
       get modelSkinnedMesh() { return modelSkinnedMesh; },
       set modelSkinnedMesh(next) { modelSkinnedMesh = next; },
       get modelSkinnedMeshes() { return modelSkinnedMeshes; },
@@ -2657,16 +2708,21 @@
         btnExportModelAnalysis,
         btnImportProfile,
         btnRetargetFab,
-        btnZoomIn,
-        btnZoomOut,
-        btnPlay,
-        btnPause,
+        btnPlayToggle,
         btnStop,
+        btnToggleSkeleton,
+        btnToggleModel,
+        btnDarkToggle,
+        btnToolsToggle,
+        toolsGroup,
         timeline,
         timeEl,
         btnResetCamera,
+        statusEl,
       },
-      ops: viewerController,
+      ops: { ...viewerController, toggleSkeleton, toggleModel },
+      getIsPlaying: () => isPlaying,
+      setSceneBg,
     });
 
     function onResize() {

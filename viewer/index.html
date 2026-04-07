@@ -13,13 +13,24 @@
       --muted: #64748b;
       --accent: #0f766e;
       --border: #dbe5f0;
+      --scene-bg: #f8fbff;
+    }
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0f1117;
+      --panel: #1a1d27;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #2dd4bf;
+      --border: #2d3748;
+      --scene-bg: #0d1117;
     }
     html, body {
       margin: 0;
       height: 100%;
       font-family: "Segoe UI", "SF Pro Text", "Arial", sans-serif;
       color: var(--text);
-      background: radial-gradient(circle at 20% 0%, #dff7f1 0%, var(--bg) 35%);
+      background: var(--bg);
     }
     #app {
       height: 100%;
@@ -29,32 +40,34 @@
     .toolbar {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
-      padding: 12px 16px;
+      padding: 10px 14px;
       border-bottom: 1px solid var(--border);
       background: var(--panel);
     }
     button, input[type="file"]::file-selector-button, select {
       border: 1px solid var(--border);
-      background: #fff;
+      background: var(--panel);
       border-radius: 10px;
-      padding: 8px 12px;
+      padding: 7px 12px;
       cursor: pointer;
       font-size: 14px;
       color: var(--text);
     }
     select {
       min-width: 180px;
+      background: var(--panel);
+      color: var(--text);
     }
     .file-group {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 6px 8px;
+      padding: 5px 8px;
       border: 1px solid var(--border);
       border-radius: 10px;
-      background: #fff;
+      background: var(--panel);
     }
     .file-label {
       font-size: 12px;
@@ -64,13 +77,13 @@
     .file-name {
       font-size: 12px;
       color: var(--text);
-      max-width: 180px;
+      max-width: 160px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
     input[type="range"] {
-      width: 220px;
+      width: 200px;
       accent-color: var(--accent);
       cursor: pointer;
     }
@@ -79,17 +92,55 @@
       color: var(--muted);
       min-width: 90px;
       text-align: right;
+      font-variant-numeric: tabular-nums;
     }
     button.primary {
       background: var(--accent);
       color: #fff;
       border-color: var(--accent);
     }
+    .toolbar-sep {
+      width: 1px;
+      height: 24px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    /* Status + spinner */
     .status {
       margin-left: auto;
       color: var(--muted);
       font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
+    .spinner {
+      display: none;
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    .status.busy .spinner { display: block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Tools collapsible */
+    .tools-toggle {
+      font-size: 13px;
+    }
+    .tools-group {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      width: 100%;
+      padding-top: 6px;
+      border-top: 1px dashed var(--border);
+    }
+    .tools-group.open { display: flex; }
+    /* Canvas */
     #canvas-wrap {
       position: relative;
       min-height: 0;
@@ -98,7 +149,7 @@
       position: absolute;
       left: 12px;
       bottom: 12px;
-      background: rgba(255, 255, 255, 0.9);
+      background: color-mix(in srgb, var(--panel) 90%, transparent);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 8px 10px;
@@ -106,6 +157,7 @@
       color: var(--muted);
       z-index: 2;
     }
+    /* FAB */
     .retarget-fab {
       position: fixed;
       right: 14px;
@@ -113,33 +165,24 @@
       z-index: 20;
       border: 0;
       border-radius: 999px;
-      padding: 12px 16px;
+      padding: 12px 18px;
       font-size: 14px;
       font-weight: 600;
       background: var(--accent);
       color: #fff;
       box-shadow: 0 8px 24px rgba(15, 118, 110, 0.35);
     }
-    .retarget-fab:hover {
-      filter: brightness(1.05);
-    }
-    .retarget-fab:active {
-      transform: translateY(1px);
-    }
+    .retarget-fab:hover { filter: brightness(1.08); }
+    .retarget-fab:active { transform: translateY(1px); }
     @media (max-width: 720px) {
-      .retarget-fab {
-        right: 10px;
-        bottom: 10px;
-        padding: 11px 14px;
-        font-size: 13px;
-      }
+      .retarget-fab { right: 10px; bottom: 10px; padding: 11px 14px; font-size: 13px; }
     }
   </style>
 </head>
 <body>
   <div id="app">
     <div class="toolbar">
-      <button id="load-default" class="primary">Load output/think.bvh</button>
+      <button id="load-default" class="primary" title="Load sample animation">Load Sample</button>
       <select id="animation-list" title="Select animation from available files">
         <option value="">Choose animation...</option>
       </select>
@@ -154,22 +197,30 @@
         <span id="model-file-name" class="file-name">not selected</span>
       </div>
       <button id="auto-setup" class="primary" title="Analyze the loaded model, pick the best available profile, and apply the animation">Auto Setup</button>
-      <button id="save-model-setup" title="Save the current model setup for future retargets on this machine">Save Model Setup</button>
-      <button id="retarget">Apply To Model</button>
-      <button id="validate-profile" title="Mark the current rig profile as validated for this model">Validate Profile</button>
-      <button id="export-profile" title="Download validated rig profile JSON for the current model">Export Profile</button>
-      <button id="export-model-analysis" title="Download skeleton and proportion analysis for the current model">Export Model Analysis</button>
-      <button id="import-profile" title="Import rig profile JSON and save it as validated">Import Profile</button>
-      <input id="profile-input" type="file" accept=".json,application/json" hidden />
-      <button id="zoom-in">Zoom +</button>
-      <button id="zoom-out">Zoom -</button>
-      <button id="play">Play</button>
-      <button id="pause">Pause</button>
-      <button id="stop">Stop</button>
-      <input id="timeline" type="range" min="0" max="1" step="0.001" value="0" />
+      <div class="toolbar-sep"></div>
+      <button id="play-toggle" title="Play / Pause (Space)">&#9654; Play</button>
+      <button id="stop" title="Stop and rewind">&#9632; Stop</button>
+      <input id="timeline" type="range" min="0" max="1" step="0.001" value="0" title="Scrub timeline (&#8592;/&#8594; to step)" />
       <div id="time" class="time">0.00 / 0.00</div>
-      <button id="reset-camera">Reset Camera</button>
-        <div id="status" class="status">Ready</div>
+      <div class="toolbar-sep"></div>
+      <button id="reset-camera" title="Reset camera (R)">Reset Camera</button>
+      <div class="toolbar-sep"></div>
+      <button id="toggle-skeleton" title="Show/hide source skeleton">Hide Skeleton</button>
+      <button id="toggle-model" title="Show/hide character model">Hide Model</button>
+      <div class="toolbar-sep"></div>
+      <button id="dark-toggle" title="Toggle dark mode">&#9790;</button>
+      <button class="tools-toggle" id="tools-toggle" title="Show/hide developer tools">Tools &#9660;</button>
+      <div id="status" class="status"><span class="spinner"></span><span id="status-text">Ready</span></div>
+      <!-- Developer tools (collapsible) -->
+      <div class="tools-group" id="tools-group">
+        <button id="save-model-setup" title="Save the current model setup for future retargets on this machine">Save Model Setup</button>
+        <button id="retarget" title="Apply animation to model manually">Apply To Model</button>
+        <button id="validate-profile" title="Mark the current rig profile as validated for this model">Validate Profile</button>
+        <button id="export-profile" title="Download validated rig profile JSON for the current model">Export Profile</button>
+        <button id="export-model-analysis" title="Download skeleton and proportion analysis for the current model">Export Model Analysis</button>
+        <button id="import-profile" title="Import rig profile JSON and save it as validated">Import Profile</button>
+        <input id="profile-input" type="file" accept=".json,application/json" hidden />
+      </div>
     </div>
     <div id="canvas-wrap">
       <div id="hint">LMB rotate, RMB pan, wheel zoom</div>

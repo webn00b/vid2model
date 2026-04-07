@@ -110,6 +110,24 @@ export function createViewerController({
     setIsScrubbing(false);
   }
 
+  // Step one frame forward or backward (direction: +1 or -1)
+  // Uses a fixed step of 1/30s (≈ one frame at 30fps)
+  function stepFrames(direction) {
+    const STEP = 1 / 30;
+    const duration = getActiveDuration();
+    const playback = getPlaybackState();
+    if (!duration || (!playback.mixer && !playback.modelMixers.length)) {
+      return { ok: false, time: 0, duration };
+    }
+    const currentTime = playback.mixer?.time ?? 0;
+    const nextTime = Math.max(0, Math.min(duration, currentTime + direction * STEP));
+    if (playback.mixer) playback.mixer.setTime(nextTime);
+    for (const mix of playback.modelMixers) mix.setTime(nextTime);
+    reapplyPlaybackSideEffects(playback);
+    updateTimelineUi(nextTime);
+    return { ok: true, time: nextTime, duration };
+  }
+
   return {
     loadBvhFile,
     loadModelFile,
@@ -130,5 +148,6 @@ export function createViewerController({
     stop,
     scrubTo,
     finishScrub,
+    stepFrames,
   };
 }
