@@ -241,6 +241,12 @@ def apply_upper_body_rotation_scale(
                 continue
             updated[base] = float(updated[base]) * joint_scale
             updated[base + 1] = float(updated[base + 1]) * joint_scale
-            updated[base + 2] = float(updated[base + 2]) * joint_scale
+            # Spine local-Y encodes the canonical rest orientation (~±180°) that results
+            # from normalize_motion_root_yaw flipping hips. Scaling this value would shift
+            # the apparent facing direction of the source skeleton and break viewer retarget
+            # facing detection, which relies on spine Y staying near ±180°. Only Z and X
+            # channels of spine carry real motion (forward lean / side tilt) and are scaled.
+            if joint_name != "spine":
+                updated[base + 2] = float(updated[base + 2]) * joint_scale
         adjusted.append(updated)
     return adjusted
