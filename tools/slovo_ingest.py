@@ -7,6 +7,8 @@ import json
 import re
 import subprocess
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -52,6 +54,11 @@ def parse_args():
         type=int,
         default=1,
         help="Number of parallel workers (default: 1). Use 4+ for batch processing.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-process videos whose .bvh output already exists (default: skip them).",
     )
     parser.add_argument(
         "--min-hand-coverage",
@@ -119,30 +126,79 @@ def _hand_coverage(frames: list) -> float:
 
 
 def _passes_quality(video_id: str, mp_index: dict | None, min_coverage: float) -> bool:
-    """Return True if video has sufficient hand tracking quality."""
     if mp_index is None:
         return True
     frames = mp_index.get(video_id)
     if frames is None:
-        # Not in index — let pipeline decide
         return True
     if len(frames) == 0:
         return False
     return _hand_coverage(frames) >= min_coverage
 
 
-def _process_video(item: dict, output_dir: Path, env_vars: dict, idx: int, total: int) -> tuple[bool, str]:
+class Manifest:
+    """Thread-safe manifest writer — appends one JSON entry per video to output_dir/manifest.json."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        self._entries: list[dict] = []
+        # Load existing entries so resume preserves history
+        if path.exists():
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._entries = data
+            except Exception:
+                pass
+
+    def record(self, entry: dict) -> None:
+        with self._lock:
+            self._entries.append(entry)
+            tmp = self._path.with_suffix(".tmp")
+            with open(tmp, "w") as f:
+                json.dump(self._entries, f, ensure_ascii=False, indent=2)
+            tmp.replace(self._path)
+
+    def ids(self) -> set[str]:
+        """Return set of video IDs already in manifest."""
+        with self._lock:
+            return {e["id"] for e in self._entries}
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+
+def _process_video(
+    item: dict,
+    output_dir: Path,
+    env_vars: dict,
+    idx: int,
+    total: int,
+    manifest: Manifest,
+    force: bool,
+) -> tuple[bool, str]:
     """Run convert.sh on a single video. Returns (success, label)."""
     video_path = item["video_path"]
     sign_slug = _sign_to_slug(item["text"])
-    # Nest output by sign: output_dir/<word>/<id>.bvh
     sign_dir = output_dir / sign_slug
     sign_dir.mkdir(parents=True, exist_ok=True)
     output_path = sign_dir / f"{item['id'][:8]}.bvh"
     label = f"[{idx}/{total}] {item['text']!r} {item['id'][:8]}"
 
     if not video_path.exists():
+        manifest.record({"id": item["id"], "sign": item["text"], "status": "missing", "bvh": None})
         return False, f"{label}  ⚠ video not found"
+
+    # Resume: skip if output already exists and --force not set
+    if not force and output_path.exists() and output_path.stat().st_size > 0:
+        manifest.record({
+            "id": item["id"], "sign": item["text"],
+            "status": "skipped", "bvh": str(output_path),
+        })
+        return True, f"{label}  ↩ already done"
 
     cmd = ["env"] + [f"{k}={v}" for k, v in env_vars.items()] + [
         "./convert.sh",
@@ -151,10 +207,24 @@ def _process_video(item: dict, output_dir: Path, env_vars: dict, idx: int, total
         "--hand-tracking", "auto",
     ]
 
+    t0 = time.monotonic()
     result = subprocess.run(cmd, capture_output=True)
+    elapsed = time.monotonic() - t0
+
     if result.returncode != 0:
-        return False, f"{label}  ✗ failed"
-    return True, f"{label}  ✓ {output_path.name}"
+        manifest.record({
+            "id": item["id"], "sign": item["text"],
+            "status": "failed", "bvh": None, "elapsed_s": round(elapsed, 1),
+        })
+        return False, f"{label}  ✗ failed ({elapsed:.0f}s)"
+
+    bvh_size = output_path.stat().st_size if output_path.exists() else 0
+    manifest.record({
+        "id": item["id"], "sign": item["text"],
+        "status": "ok", "bvh": str(output_path),
+        "bvh_bytes": bvh_size, "elapsed_s": round(elapsed, 1),
+    })
+    return True, f"{label}  ✓ {output_path.name} ({elapsed:.0f}s)"
 
 
 def main():
@@ -242,11 +312,23 @@ def main():
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Load manifest — used for resume detection
+    manifest = Manifest(output_dir / "manifest.json")
+    already_done = manifest.ids()
+
+    # Apply resume filter if not forced
+    if not args.force and already_done:
+        before = len(selected)
+        selected = [v for v in selected if v["id"] not in already_done]
+        skipped_resume = before - len(selected)
+        if skipped_resume:
+            print(f"Resume: skipping {skipped_resume} already-manifest videos.")
+
     signs_in_selected = sorted({v["text"] for v in selected})
     print(f"Found {len(candidates)} candidates, processing {len(selected)}")
     if len(signs_in_selected) <= 10:
         print(f"Signs: {', '.join(signs_in_selected)}")
-    print(f"Output: {output_dir}  workers={args.workers}\n")
+    print(f"Output: {output_dir}  workers={args.workers}  manifest: {output_dir}/manifest.json\n")
 
     # Build env overrides
     env_vars = {
@@ -263,31 +345,37 @@ def main():
 
     total = len(selected)
     success = 0
+    skipped = 0
     failed = 0
+
+    def _handle_result(ok: bool, msg: str) -> None:
+        nonlocal success, skipped, failed
+        print(msg, flush=True)
+        if "↩" in msg:
+            skipped += 1
+        elif ok:
+            success += 1
+        else:
+            failed += 1
 
     if args.workers <= 1:
         for i, item in enumerate(selected, 1):
-            ok, msg = _process_video(item, output_dir, env_vars, i, total)
-            print(msg, flush=True)
-            if ok:
-                success += 1
-            else:
-                failed += 1
+            ok, msg = _process_video(item, output_dir, env_vars, i, total, manifest, args.force)
+            _handle_result(ok, msg)
     else:
-        futures = {}
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            for i, item in enumerate(selected, 1):
-                fut = pool.submit(_process_video, item, output_dir, env_vars, i, total)
-                futures[fut] = i
+            futures = {
+                pool.submit(_process_video, item, output_dir, env_vars, i, total, manifest, args.force): i
+                for i, item in enumerate(selected, 1)
+            }
             for fut in as_completed(futures):
                 ok, msg = fut.result()
-                print(msg, flush=True)
-                if ok:
-                    success += 1
-                else:
-                    failed += 1
+                _handle_result(ok, msg)
 
-    print(f"\nDone: {success} succeeded, {failed} failed → {output_dir}")
+    print(
+        f"\nDone: {success} converted, {skipped} skipped (resume), {failed} failed"
+        f"  →  {output_dir}/manifest.json  ({len(manifest)} total entries)"
+    )
 
 
 if __name__ == "__main__":
