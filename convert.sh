@@ -19,6 +19,7 @@ SKELETON_PROFILE_JSON="${SKELETON_PROFILE_JSON:-}"
 VRM_MODEL="${VRM_MODEL:-}"
 OVERRIDE_FPS="${OVERRIDE_FPS:-}"
 HAND_TRACKING="${HAND_TRACKING:-off}"
+POSE_CACHE_DIR="${POSE_CACHE_DIR:-}"
 
 python_minor() {
   "$1" -c 'import sys; print(sys.version_info.minor)' 2>/dev/null
@@ -97,6 +98,7 @@ Environment knobs:
   LOOP_MODE=off|auto|force          Extract a cyclic loop window from the cleaned motion.
   SKELETON_PROFILE_JSON=path        Override BVH rest offsets using a model skeleton profile JSON.
   OVERRIDE_FPS=N                    Override video FPS (auto-detected from file if not set).
+  POSE_CACHE_DIR=path               Cache per-video pose JSON here; skip MediaPipe on reruns.
   VRM_MODEL=path                    Retarget onto VRM model (same as --vrm).
 USAGE
 }
@@ -296,6 +298,9 @@ if [[ -n "$OVERRIDE_FPS" ]]; then
 fi
 if [[ -n "$HAND_TRACKING" ]]; then
   CMD+=(--hand-tracking "$HAND_TRACKING")
+fi
+if [[ -n "$POSE_CACHE_DIR" ]]; then
+  CMD+=(--pose-cache-dir "$POSE_CACHE_DIR")
 fi
 
 "${CMD[@]}"
