@@ -590,7 +590,9 @@ def cleanup_pose_frames(
     anchor_samples: List[Dict[str, np.ndarray]],
     use_contact_cleanup: bool = True,
 ) -> Tuple[List[Dict[str, np.ndarray]], Dict[str, float]]:
-    smooth_alpha = 0.35
+    # Short clips (<60 frames, typical for sign language at ~45 frames) need lower
+    # smoothing to preserve wrist/hand motion energy — semantic content for gestures.
+    smooth_alpha = 0.22 if len(frames_pts) < 60 else 0.35
     if not frames_pts:
         return frames_pts, _empty_cleanup_stats()
 

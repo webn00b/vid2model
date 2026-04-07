@@ -220,6 +220,17 @@ AUTO_POSE_PRESETS: Dict[str, Dict[str, Any]] = {
         "body_collider_waist_size_percent": 108,
         "body_collider_hip_size_percent": 112,
     },
+    # Person facing camera directly: frontal shot, standing still, arms active.
+    # Typical for sign language, gesture, or interview capture.
+    "frontal_standing": {
+        "shoulder_tracking": True,
+        "hip_camera": False,
+        "auto_grounding": False,
+        "use_leg_ik": False,
+        "body_bend_reduction_power": 0.5,
+        "upper_body_rotation_scale": 0.35,
+        "arm_rotation_scale": 1.0,
+    },
 }
 
 
@@ -366,6 +377,7 @@ def _predict_auto_label(features: np.ndarray, summary: Dict[str, float], model_p
         "low_camera": 0.0,
         "wide_arms": 0.0,
         "crouched": 0.0,
+        "frontal_standing": 0.0,
     }
     if summary["hand_drop_ratio"] < 0.12:
         scores["wide_arms"] += 2.0
@@ -379,6 +391,14 @@ def _predict_auto_label(features: np.ndarray, summary: Dict[str, float], model_p
         scores["wide_arms"] += 1.0
     if summary["head_to_torso"] > 0.42:
         scores["low_camera"] += 0.5
+    # Frontal standing: person faces camera (low lateral bias), not crouched, no depth skew
+    _shoulder_bias_abs = abs(summary.get("shoulder_bias", 1.0))
+    _hip_bias_abs = abs(summary.get("hip_bias", 1.0))
+    _depth_bias = abs(summary.get("torso_depth_ratio", 1.0))
+    if _shoulder_bias_abs < 0.08 and _hip_bias_abs < 0.08 and _depth_bias < 0.08:
+        scores["frontal_standing"] += 3.0
+    if _shoulder_bias_abs < 0.12 and _hip_bias_abs < 0.12:
+        scores["frontal_standing"] += 1.0
     label = max(scores.items(), key=lambda item: item[1])[0]
     if scores[label] <= 0.5:
         label = "default"
