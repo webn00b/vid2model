@@ -288,6 +288,12 @@ bd remember "insight"      # Save persistent knowledge
    - Fix: Added baseYaw compensation and delta inversion for world-transfer bones
    - Code: Line ~971 in `retarget-live.js`, checks `Math.abs(baseYaw) > 0.1`
 
+3. **Spine Y must NOT be scaled by `upper_body_rotation_scale` (Commit 59fad8e)**
+   - Problem: `apply_upper_body_rotation_scale` was scaling spine Y (≈±178°) along with Z/X. This dropped spine Y to ~41°, making `estimateFacingYawOffset` return ≈π → `strongFacingMismatch=true` → viewer forced live delta → model rotated 180°
+   - Root cause: Spine local Y ≈±178° is a **system-coords artifact** from `normalize_motion_root_yaw` flipping hips by -180°. It is NOT real motion — it's the baseline rest orientation. Real spine motion lives in Z (forward lean) and X (side tilt) only.
+   - Fix: Skip `base+2` for `joint_name == "spine"` in `apply_upper_body_rotation_scale()`
+   - Code: `vid2model_lib/pipeline_motion_transforms.py`
+
 ### Known Patterns to Watch
 - VRM models ALWAYS have `modelRoot.rotation.y = Math.PI`
 - This baseYaw must be extracted and compensated in retargeting
