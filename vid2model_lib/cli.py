@@ -36,6 +36,7 @@ class CliOptions:
     lower_body_rotation_mode: str
     loop_mode: str
     override_fps: float | None
+    hand_tracking: str
     preset: str
 
 
@@ -138,6 +139,11 @@ def parse_args() -> argparse.Namespace:
         "--override-fps",
         type=float,
         help="Override video FPS (auto-detected from file if not specified).",
+    )
+    parser.add_argument(
+        "--hand-tracking",
+        choices=["off", "auto"],
+        help="Enable real hand landmark tracking alongside pose detection.",
     )
     parser.add_argument("--check-tools", action="store_true", help="Validate local toolchain and exit.")
     return parser.parse_args()
@@ -257,6 +263,7 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
     loop_mode = str(_merge_config_value(args, cfg, "loop_mode", preset_defaults.get("loop_mode", "off"))).strip().lower()
     override_fps_value = _merge_config_value(args, cfg, "override_fps", None)
     override_fps = float(override_fps_value) if override_fps_value else None
+    hand_tracking = str(_merge_config_value(args, cfg, "hand_tracking", preset_defaults.get("hand_tracking", "off"))).strip().lower()
 
     pose_corrections = build_pose_correction_profile(cfg.get("pose_corrections"))
     pose_corrections = replace(
@@ -293,6 +300,7 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
     _validate_minimum(progress_every, "progress_every", 0)
     _validate_choice(lower_body_rotation_mode, "lower_body_rotation_mode", ("off", "invert", "yaw180"))
     _validate_choice(loop_mode, "loop_mode", ("off", "auto", "force"))
+    _validate_choice(hand_tracking, "hand_tracking", ("off", "auto"))
 
     if not input_value:
         raise ValueError("Specify --input (or use --check-tools).")
@@ -339,6 +347,7 @@ def _build_cli_options(args: argparse.Namespace, cfg: Dict[str, Any]) -> CliOpti
         lower_body_rotation_mode=lower_body_rotation_mode,
         loop_mode=loop_mode,
         override_fps=override_fps,
+        hand_tracking=hand_tracking,
         preset=preset,
     )
 
@@ -369,6 +378,7 @@ def main() -> int:
         lower_body_rotation_mode=options.lower_body_rotation_mode,
         loop_mode=options.loop_mode,
         override_fps=options.override_fps,
+        hand_tracking=options.hand_tracking,
         include_source_stage_diagnostics=options.output_diag_json is not None,
     )
     quality = diagnostics.get("quality")
