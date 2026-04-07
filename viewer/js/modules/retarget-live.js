@@ -578,7 +578,32 @@ function estimateFacingVector(bones) {
 
   const forward = v5.crossVectors(across.normalize(), up.normalize());
   if (forward.lengthSq() < 1e-9) return null;
-  return forward.normalize().clone();
+  forward.normalize();
+
+  // Detect the normalize_motion_root_yaw coordinate-system artifact: when the spine's
+  // local Y rotation is near ±180°, the shoulder world positions are unreliable for
+  // facing estimation (rightShoulder appears on the world-left side due to the cumulative
+  // ≈180° flip at the spine joint). This artifact is produced by the vid2model pipeline
+  // when hips are flipped −180° and the spine compensates with ≈±178° local Y.
+  //
+  // Fix: use hips world facing direction directly. The hips bone encodes the skeleton's
+  // canonical orientation reliably (root_yaw_offset_deg shifts it to face the correct
+  // direction), unaffected by chest lean or spine compensations.
+  const spine = findBoneByCanonical(bones, ["spine"]);
+  if (spine) {
+    const spineLocalY = 2 * Math.atan2(spine.quaternion.y, spine.quaternion.w);
+    if (Math.abs(Math.abs(spineLocalY) - Math.PI) < 0.3) {
+      const hipsQ = new THREE.Quaternion();
+      hips.getWorldQuaternion(hipsQ);
+      const hipsForward = new THREE.Vector3(0, 0, 1).applyQuaternion(hipsQ);
+      hipsForward.y = 0;
+      if (hipsForward.lengthSq() > 1e-9) {
+        return hipsForward.normalize();
+      }
+    }
+  }
+
+  return forward.clone();
 }
 
 export function estimateFacingYawOffset(sourceBones, targetBones) {
