@@ -407,7 +407,9 @@ def convert_video_to_bvh(
             _apply_segment_length_constraints(frame, preview_target_lengths) for frame in preview_smoothed
         ]
         pre_cleanup_loopability = analyze_motion_loopability(preview_constrained, fps)
-        if str(pre_cleanup_loopability.get("label", "oneshot")) == "oneshot":
+        _loop_label = str(pre_cleanup_loopability.get("label", "oneshot"))
+        _loop_score = float(pre_cleanup_loopability.get("score", 0.0))
+        if _loop_label == "oneshot" or (_loop_label == "cyclic" and _loop_score < 0.20):
             contact_cleanup_enabled = False
         print(
             (
