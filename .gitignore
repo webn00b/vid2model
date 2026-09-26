@@ -57,3 +57,11 @@ node_modules
 
 
 slovo-all/
+
+# Local input videos
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.m4v
